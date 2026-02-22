@@ -2,16 +2,53 @@
 
 use crate::config::AudioConfig;
 use crate::error::{AudioError, Result};
-use std::sync::Arc;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::mpsc;
+use tracing::{debug, error, warn};
 
 /// Audio capture device
 pub struct CaptureDevice {
     config: AudioConfig,
-    /// Sender for captured audio frames
-    frame_tx: Option<mpsc::Sender<AudioFrame>>,
-    /// Is currently capturing
-    is_active: bool,
+    /// The cpal stream handle
+    stream: Option<cpal::Stream>,
+    /// Shared state for the capture thread
+    state: Arc<CaptureState>,
+    /// Start time for timestamps
+    start_time: Option<Instant>,
+}
+
+/// Shared state between capture thread and main thread
+struct CaptureState {
+    /// Is capturing active
+    is_active: AtomicBool,
+    /// Input volume (scaled by 100 for atomic ops)
+    volume: AtomicU64,
+    /// VAD threshold (scaled by 1000 for atomic ops)
+    vad_threshold: AtomicU64,
+    /// VAD enabled
+    vad_enabled: AtomicBool,
+}
+
+impl CaptureState {
+    fn new(config: &AudioConfig) -> Self {
+        Self {
+            is_active: AtomicBool::new(false),
+            volume: AtomicU64::new((config.input_volume * 100.0) as u64),
+            vad_threshold: AtomicU64::new((config.vad_threshold * 1000.0) as u64),
+            vad_enabled: AtomicBool::new(config.vad_enabled),
+        }
+    }
+
+    fn get_volume(&self) -> f32 {
+        self.volume.load(Ordering::Relaxed) as f32 / 100.0
+    }
+
+    fn get_vad_threshold(&self) -> f32 {
+        self.vad_threshold.load(Ordering::Relaxed) as f32 / 1000.0
+    }
 }
 
 /// A captured audio frame
@@ -28,57 +65,217 @@ pub struct AudioFrame {
 impl CaptureDevice {
     /// Create a new capture device
     pub fn new(config: AudioConfig) -> Result<Self> {
+        let state = Arc::new(CaptureState::new(&config));
         Ok(Self {
             config,
-            frame_tx: None,
-            is_active: false,
+            stream: None,
+            state,
+            start_time: None,
         })
     }
 
     /// List available capture devices
     pub fn list_devices() -> Result<Vec<DeviceInfo>> {
-        // TODO: Use cpal to enumerate devices
-        Ok(vec![DeviceInfo {
-            name: "Default".to_string(),
-            is_default: true,
-        }])
+        let host = cpal::default_host();
+        let default_device = host.default_input_device();
+        let default_name = default_device
+            .as_ref()
+            .and_then(|d| d.name().ok());
+
+        let devices = host
+            .input_devices()
+            .map_err(|e| AudioError::DeviceInit(format!("Failed to enumerate devices: {}", e)))?;
+
+        let mut device_list = Vec::new();
+        for device in devices {
+            if let Ok(name) = device.name() {
+                let is_default = default_name.as_ref().map_or(false, |dn| dn == &name);
+                device_list.push(DeviceInfo { name, is_default });
+            }
+        }
+
+        if device_list.is_empty() {
+            device_list.push(DeviceInfo {
+                name: "No devices found".to_string(),
+                is_default: false,
+            });
+        }
+
+        Ok(device_list)
     }
 
     /// Start capturing audio
     pub fn start(&mut self, frame_tx: mpsc::Sender<AudioFrame>) -> Result<()> {
-        if self.is_active {
+        if self.state.is_active.load(Ordering::Relaxed) {
             return Ok(());
         }
 
-        self.frame_tx = Some(frame_tx);
-        self.is_active = true;
+        let host = cpal::default_host();
 
-        // TODO: Start actual audio capture thread using cpal
-        // For now, just mark as active
+        // Get input device
+        let device = if let Some(ref device_name) = self.config.input_device {
+            host.input_devices()
+                .map_err(|e| AudioError::DeviceInit(format!("Failed to enumerate devices: {}", e)))?
+                .find(|d| d.name().ok().as_ref() == Some(device_name))
+                .ok_or_else(|| AudioError::DeviceNotFound(device_name.clone()))?
+        } else {
+            host.default_input_device()
+                .ok_or(AudioError::NoDevice)?
+        };
 
+        debug!("Using capture device: {:?}", device.name());
+
+        // Configure the stream
+        let config = cpal::StreamConfig {
+            channels: self.config.channels,
+            sample_rate: cpal::SampleRate(self.config.sample_rate),
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        let frame_size = self.config.frame_size_samples();
+        let channels = self.config.channels as usize;
+        let state = self.state.clone();
+        let start_time = Instant::now();
+        self.start_time = Some(start_time);
+
+        // Buffer to accumulate samples
+        let buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(frame_size * channels * 2)));
+        let buffer_clone = buffer.clone();
+
+        // Build the input stream
+        let stream = device
+            .build_input_stream(
+                &config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    if !state.is_active.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let volume = state.get_volume();
+                    let vad_threshold = state.get_vad_threshold();
+                    let vad_enabled = state.vad_enabled.load(Ordering::Relaxed);
+
+                    // Convert f32 to i16 and apply volume
+                    let samples: Vec<i16> = data
+                        .iter()
+                        .map(|&s| {
+                            let amplified = s * volume;
+                            (amplified.clamp(-1.0, 1.0) * 32767.0) as i16
+                        })
+                        .collect();
+
+                    // Add to buffer
+                    let mut buf = buffer_clone.lock().unwrap();
+                    buf.extend_from_slice(&samples);
+
+                    // Check if we have enough for a frame
+                    let samples_per_frame = frame_size * channels;
+                    while buf.len() >= samples_per_frame {
+                        let frame_samples: Vec<i16> = buf.drain(..samples_per_frame).collect();
+
+                        // Calculate voice activity
+                        let voice_activity = if vad_enabled {
+                            calculate_vad(&frame_samples, vad_threshold)
+                        } else {
+                            true
+                        };
+
+                        let timestamp_us = start_time.elapsed().as_micros() as u64;
+
+                        let frame = AudioFrame {
+                            samples: frame_samples,
+                            timestamp_us,
+                            voice_activity,
+                        };
+
+                        // Try to send, but don't block if receiver is full
+                        if let Err(e) = frame_tx.try_send(frame) {
+                            match e {
+                                mpsc::error::TrySendError::Full(_) => {
+                                    // Channel full, drop frame (acceptable for real-time audio)
+                                }
+                                mpsc::error::TrySendError::Closed(_) => {
+                                    // Channel closed, stop capturing
+                                    state.is_active.store(false, Ordering::Relaxed);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                },
+                move |err| {
+                    error!("Audio capture error: {}", err);
+                },
+                None, // No timeout
+            )
+            .map_err(|e| AudioError::CaptureOpen(format!("Failed to build input stream: {}", e)))?;
+
+        // Start the stream
+        stream
+            .play()
+            .map_err(|e| AudioError::CaptureOpen(format!("Failed to start capture stream: {}", e)))?;
+
+        self.stream = Some(stream);
+        self.state.is_active.store(true, Ordering::Relaxed);
+
+        debug!("Audio capture started");
         Ok(())
     }
 
     /// Stop capturing audio
     pub fn stop(&mut self) -> Result<()> {
-        self.is_active = false;
-        self.frame_tx = None;
+        self.state.is_active.store(false, Ordering::Relaxed);
+
+        if let Some(stream) = self.stream.take() {
+            // Stream will be dropped and stopped
+            drop(stream);
+        }
+
+        self.start_time = None;
+        debug!("Audio capture stopped");
         Ok(())
     }
 
     /// Check if capturing
     pub fn is_active(&self) -> bool {
-        self.is_active
+        self.state.is_active.load(Ordering::Relaxed)
     }
 
     /// Set input volume (0.0-2.0)
     pub fn set_volume(&mut self, volume: f32) -> Result<()> {
-        if volume < 0.0 || volume > 2.0 {
+        if !(0.0..=2.0).contains(&volume) {
             return Err(AudioError::InvalidConfig("Volume must be 0.0-2.0".into()));
         }
-        // TODO: Apply volume
+        self.state.volume.store((volume * 100.0) as u64, Ordering::Relaxed);
         Ok(())
     }
+
+    /// Set VAD threshold (0.0-1.0)
+    pub fn set_vad_threshold(&mut self, threshold: f32) -> Result<()> {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(AudioError::InvalidConfig("VAD threshold must be 0.0-1.0".into()));
+        }
+        self.state.vad_threshold.store((threshold * 1000.0) as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Enable/disable VAD
+    pub fn set_vad_enabled(&mut self, enabled: bool) {
+        self.state.vad_enabled.store(enabled, Ordering::Relaxed);
+    }
+}
+
+/// Calculate voice activity detection based on RMS energy
+fn calculate_vad(samples: &[i16], threshold: f32) -> bool {
+    if samples.is_empty() {
+        return false;
+    }
+
+    let sum: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
+    let rms = (sum / samples.len() as f64).sqrt() as f32;
+    let energy = rms / 32768.0;
+
+    energy > threshold
 }
 
 /// Device information

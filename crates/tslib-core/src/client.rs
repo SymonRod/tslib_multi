@@ -8,7 +8,9 @@ use crate::connection::ConnectionState;
 use crate::error::{ConnectionError, Error, Result};
 use crate::events::{AudioCodec, Event, EventHandler};
 use crate::state::{Channel, ServerState, User};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
@@ -24,6 +26,9 @@ use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio,
 /// the client is not Send/Sync and must be used from a single task.
 ///
 /// Use `process_events()` to poll for and handle server events.
+/// Duration after which a user is considered to have stopped talking (ms)
+const TALK_TIMEOUT_MS: u128 = 300;
+
 pub struct Client {
     /// The tsclientlib connection
     connection: Option<TsConnection>,
@@ -43,6 +48,8 @@ pub struct Client {
     channel_id: Option<u64>,
     /// Audio packet sequence number
     audio_sequence: u16,
+    /// Track which users are currently talking (user_id -> last audio timestamp)
+    talking_users: HashMap<u16, Instant>,
 }
 
 impl Client {
@@ -63,6 +70,7 @@ impl Client {
             client_id: None,
             channel_id: None,
             audio_sequence: 0,
+            talking_users: HashMap::new(),
         };
 
         // Establish connection
@@ -163,12 +171,44 @@ impl Client {
             events.push(event);
         }
 
+        // Check for talk status timeouts
+        let talk_stop_events = self.check_talk_timeouts();
+        events.extend(talk_stop_events);
+
         // Dispatch events to handlers
         for event in &events {
             self.dispatch_event(event.clone()).await;
         }
 
         Ok(events)
+    }
+
+    /// Check for users who have stopped talking (no audio received recently)
+    fn check_talk_timeouts(&mut self) -> Vec<Event> {
+        let now = Instant::now();
+        let mut stopped_users = Vec::new();
+
+        // Find users who haven't sent audio recently
+        self.talking_users.retain(|&user_id, last_audio| {
+            let elapsed = now.duration_since(*last_audio).as_millis();
+            if elapsed > TALK_TIMEOUT_MS {
+                stopped_users.push(user_id);
+                false // Remove from tracking
+            } else {
+                true // Keep tracking
+            }
+        });
+
+        // Generate TalkStatusStop events
+        stopped_users
+            .into_iter()
+            .map(|user_id| {
+                debug!("User {} stopped talking", user_id);
+                let event = Event::TalkStatusStop { user_id };
+                let _ = self.event_tx.send(event.clone());
+                event
+            })
+            .collect()
     }
 
     /// Wait for the initial connection to be established
@@ -223,6 +263,17 @@ impl Client {
                     AudioData::S2CWhisper { from, codec, data, .. } => (*from, *codec, data),
                     _ => return None, // C2S packets should not be received
                 };
+
+                // Check if this is a new talk session (user wasn't talking before)
+                let was_talking = self.talking_users.contains_key(&from_id);
+                self.talking_users.insert(from_id, Instant::now());
+
+                if !was_talking {
+                    // Emit TalkStatusStart
+                    let start_event = Event::TalkStatusStart { user_id: from_id };
+                    let _ = self.event_tx.send(start_event);
+                    debug!("User {} started talking", from_id);
+                }
 
                 let event = Event::AudioReceived {
                     user_id: from_id,

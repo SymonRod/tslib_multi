@@ -1,10 +1,9 @@
 //! High-level audio manager
 
-use crate::capture::{AudioFrame, CaptureDevice, VoiceActivityDetector};
+use crate::capture::{CaptureDevice, VoiceActivityDetector};
 use crate::codec::{Decoder, Encoder, OpusCodec, OpusDecoder, OpusEncoder};
 use crate::config::AudioConfig;
-use crate::error::{AudioError, Result};
-use crate::mixer::AudioMixer;
+use crate::error::Result;
 use crate::playback::PlaybackDevice;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,20 +14,16 @@ pub struct AudioManager {
     config: AudioConfig,
     /// Capture device
     capture: Arc<Mutex<CaptureDevice>>,
-    /// Playback device
+    /// Playback device (owns the mixer)
     playback: Arc<Mutex<PlaybackDevice>>,
     /// Encoder for outgoing audio
     encoder: Arc<Mutex<OpusEncoder>>,
     /// Decoders for incoming audio (per user)
     decoders: Arc<RwLock<HashMap<u16, OpusDecoder>>>,
-    /// Audio mixer
-    mixer: Arc<Mutex<AudioMixer>>,
     /// VAD
     vad: Arc<Mutex<VoiceActivityDetector>>,
     /// Is capturing
     is_capturing: Arc<RwLock<bool>>,
-    /// Encoded packet sender
-    packet_tx: Option<mpsc::Sender<EncodedPacket>>,
 }
 
 /// An encoded audio packet ready for transmission
@@ -52,7 +47,6 @@ impl AudioManager {
         let codec = OpusCodec::new(config.clone())?;
         let encoder = codec.create_encoder()?;
         let vad = VoiceActivityDetector::new(config.vad_threshold);
-        let mixer = AudioMixer::new(config.sample_rate, config.playback_buffer_samples() * 4);
 
         Ok(Self {
             config,
@@ -60,10 +54,8 @@ impl AudioManager {
             playback: Arc::new(Mutex::new(playback)),
             encoder: Arc::new(Mutex::new(encoder)),
             decoders: Arc::new(RwLock::new(HashMap::new())),
-            mixer: Arc::new(Mutex::new(mixer)),
             vad: Arc::new(Mutex::new(vad)),
             is_capturing: Arc::new(RwLock::new(false)),
-            packet_tx: None,
         })
     }
 
@@ -146,7 +138,7 @@ impl AudioManager {
         &self,
         user_id: u16,
         data: &[u8],
-        codec: u8,
+        _codec: u8,
     ) -> Result<()> {
         // Get or create decoder for this user
         let mut decoders = self.decoders.write().await;
@@ -155,11 +147,12 @@ impl AudioManager {
             .or_insert_with(|| OpusDecoder::new(&self.config).unwrap());
 
         // Decode
-        let mut samples = vec![0i16; self.config.frame_size_samples()];
+        let mut samples = vec![0i16; self.config.frame_size_samples() * self.config.channels as usize];
         let decoded = decoder.decode(data, &mut samples)?;
 
-        // Add to mixer
-        self.mixer.lock().await.add_audio(user_id, &samples[..decoded]);
+        // Add to playback mixer
+        let playback = self.playback.lock().await;
+        playback.add_user_audio(user_id, &samples[..decoded]);
 
         Ok(())
     }
@@ -168,9 +161,10 @@ impl AudioManager {
     pub async fn handle_packet_loss(&self, user_id: u16) -> Result<()> {
         let mut decoders = self.decoders.write().await;
         if let Some(decoder) = decoders.get_mut(&user_id) {
-            let mut samples = vec![0i16; self.config.frame_size_samples()];
+            let mut samples = vec![0i16; self.config.frame_size_samples() * self.config.channels as usize];
             let decoded = decoder.decode_plc(&mut samples)?;
-            self.mixer.lock().await.add_audio(user_id, &samples[..decoded]);
+            let playback = self.playback.lock().await;
+            playback.add_user_audio(user_id, &samples[..decoded]);
         }
         Ok(())
     }
@@ -187,18 +181,21 @@ impl AudioManager {
 
     /// Set volume for a specific user
     pub async fn set_user_volume(&self, user_id: u16, volume: f32) {
-        self.mixer.lock().await.set_user_volume(user_id, volume);
+        let playback = self.playback.lock().await;
+        playback.set_user_volume(user_id, volume);
     }
 
     /// Mute/unmute a specific user
     pub async fn set_user_muted(&self, user_id: u16, muted: bool) {
-        self.mixer.lock().await.set_user_muted(user_id, muted);
+        let playback = self.playback.lock().await;
+        playback.set_user_muted(user_id, muted);
     }
 
     /// Remove a user's audio state
     pub async fn remove_user(&self, user_id: u16) {
         self.decoders.write().await.remove(&user_id);
-        self.mixer.lock().await.remove_user(user_id);
+        let playback = self.playback.lock().await;
+        playback.remove_user(user_id);
     }
 
     /// Get VAD state
