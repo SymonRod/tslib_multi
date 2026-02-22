@@ -13,8 +13,9 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use futures::{StreamExt, TryStreamExt};
-use tsclientlib::{Connection as TsConnection, DisconnectOptions, Reason, StreamItem};
-use tsproto_packets::packets::{AudioData, CodecType, OutAudio};
+use tsclientlib::prelude::*;
+use tsclientlib::{Connection as TsConnection, DisconnectOptions, MessageTarget, Reason, StreamItem, ClientId};
+use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType};
 
 /// The main TeamSpeak client
 ///
@@ -327,15 +328,40 @@ impl Client {
     pub fn move_to_channel_with_password(
         &mut self,
         channel_id: u64,
-        _password: Option<String>,
+        password: Option<String>,
     ) -> Result<()> {
-        let _con = self
+        let con = self
             .connection
             .as_mut()
             .ok_or(ConnectionError::NotConnected)?;
 
-        // TODO: Use proper tsclientlib command to move to channel
-        // This requires using the book API to send commands
+        // Get our client ID from the state
+        let our_client_id = con
+            .get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .own_client;
+
+        debug!("Moving client {} to channel {}", our_client_id.0, channel_id);
+
+        // Create the clientmove command
+        let mut cmd = OutCommand::new(
+            Direction::C2S,
+            Flags::empty(),
+            PacketType::Command,
+            "clientmove",
+        );
+        cmd.write_arg("clid", &our_client_id.0);
+        cmd.write_arg("cid", &channel_id);
+
+        // Add password if provided
+        if let Some(pwd) = password {
+            let encoded_pwd = tsproto_types::crypto::encode_password(pwd.as_bytes());
+            cmd.write_arg("cpw", &encoded_pwd);
+        }
+
+        // Send the command using OutCommandExt trait
+        cmd.send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
 
         self.channel_id = Some(channel_id);
         Ok(())
@@ -344,39 +370,60 @@ impl Client {
     /// Send a message to the server
     pub fn send_server_message(&mut self, message: impl Into<String>) -> Result<()> {
         let msg = message.into();
-        let _con = self
+        let con = self
             .connection
             .as_mut()
             .ok_or(ConnectionError::NotConnected)?;
 
-        // TODO: Send message via tsclientlib using the command API
         debug!("Sending server message: {}", msg);
+
+        // Get state and create message command, then send it
+        con.get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .send_message(MessageTarget::Server, &msg)
+            .send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
         Ok(())
     }
 
     /// Send a message to the current channel
     pub fn send_channel_message(&mut self, message: impl Into<String>) -> Result<()> {
         let msg = message.into();
-        let _con = self
+        let con = self
             .connection
             .as_mut()
             .ok_or(ConnectionError::NotConnected)?;
 
-        // TODO: Send channel message via tsclientlib
         debug!("Sending channel message: {}", msg);
+
+        // Get state and create message command, then send it
+        con.get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .send_message(MessageTarget::Channel, &msg)
+            .send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
         Ok(())
     }
 
     /// Send a private message to a user
     pub fn send_private_message(&mut self, user_id: u16, message: impl Into<String>) -> Result<()> {
         let msg = message.into();
-        let _con = self
+        let con = self
             .connection
             .as_mut()
             .ok_or(ConnectionError::NotConnected)?;
 
-        // TODO: Send private message via tsclientlib
         debug!("Sending private message to {}: {}", user_id, msg);
+
+        // Get state and create message command, then send it
+        con.get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .send_message(MessageTarget::Client(ClientId(user_id)), &msg)
+            .send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
         Ok(())
     }
 
