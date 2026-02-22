@@ -14,7 +14,8 @@ use tracing::{debug, info, warn};
 
 use futures::{StreamExt, TryStreamExt};
 use tsclientlib::prelude::*;
-use tsclientlib::{Connection as TsConnection, DisconnectOptions, MessageTarget, Reason, StreamItem, ClientId};
+use tsclientlib::{Connection as TsConnection, DisconnectOptions, InMessage, Reason, StreamItem, ClientId, TextMessageTargetMode};
+use tsclientlib::MessageTarget as TsMessageTarget;
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType};
 
 /// The main TeamSpeak client
@@ -240,8 +241,7 @@ impl Client {
                 Some(event)
             }
             StreamItem::MessageEvent(msg) => {
-                debug!("Message event: {:?}", msg);
-                None
+                self.process_message_event(msg)
             }
             _ => None,
         }
@@ -259,6 +259,65 @@ impl Client {
                 debug!("Property removed: {:?}", id);
             }
             _ => {}
+        }
+    }
+
+    /// Process an incoming message event
+    fn process_message_event(&mut self, msg: InMessage) -> Option<Event> {
+        match msg {
+            InMessage::TextMessage(text_msg) => {
+                // Get the first part of the message (messages can have multiple parts)
+                let part = text_msg.iter().next()?;
+
+                // Convert TextMessageTargetMode to our MessageTarget
+                let target = match part.target {
+                    TextMessageTargetMode::Server => crate::events::MessageTarget::Server,
+                    TextMessageTargetMode::Channel => crate::events::MessageTarget::Channel,
+                    TextMessageTargetMode::Client => crate::events::MessageTarget::Private,
+                    TextMessageTargetMode::Unknown => {
+                        warn!("Received message with unknown target mode");
+                        return None;
+                    }
+                };
+
+                let event = Event::TextMessage {
+                    sender_id: part.invoker_id.0,
+                    sender_name: part.invoker_name.clone(),
+                    message: part.message.clone(),
+                    target,
+                };
+
+                debug!(
+                    "Text message from {} ({}): {}",
+                    part.invoker_name, part.invoker_id.0, part.message
+                );
+
+                let _ = self.event_tx.send(event.clone());
+                Some(event)
+            }
+            InMessage::ClientPoke(poke_msg) => {
+                // Get the first part of the poke message
+                let part = poke_msg.iter().next()?;
+
+                let event = Event::Poked {
+                    poker_id: part.invoker_id.0,
+                    poker_name: part.invoker_name.clone(),
+                    message: part.message.clone(),
+                };
+
+                debug!(
+                    "Poked by {} ({}): {}",
+                    part.invoker_name, part.invoker_id.0, part.message
+                );
+
+                let _ = self.event_tx.send(event.clone());
+                Some(event)
+            }
+            _ => {
+                // Other message types we don't handle yet
+                debug!("Unhandled message event: {:?}", msg.get_command_name());
+                None
+            }
         }
     }
 
@@ -380,7 +439,7 @@ impl Client {
         // Get state and create message command, then send it
         con.get_state()
             .map_err(|e| Error::Internal(e.to_string()))?
-            .send_message(MessageTarget::Server, &msg)
+            .send_message(TsMessageTarget::Server, &msg)
             .send(con)
             .map_err(|e| Error::Internal(e.to_string()))?;
 
@@ -400,7 +459,7 @@ impl Client {
         // Get state and create message command, then send it
         con.get_state()
             .map_err(|e| Error::Internal(e.to_string()))?
-            .send_message(MessageTarget::Channel, &msg)
+            .send_message(TsMessageTarget::Channel, &msg)
             .send(con)
             .map_err(|e| Error::Internal(e.to_string()))?;
 
@@ -420,7 +479,7 @@ impl Client {
         // Get state and create message command, then send it
         con.get_state()
             .map_err(|e| Error::Internal(e.to_string()))?
-            .send_message(MessageTarget::Client(ClientId(user_id)), &msg)
+            .send_message(TsMessageTarget::Client(ClientId(user_id)), &msg)
             .send(con)
             .map_err(|e| Error::Internal(e.to_string()))?;
 
