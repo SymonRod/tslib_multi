@@ -241,4 +241,105 @@ mod tests {
     fn test_strip() {
         assert_eq!(strip_bbcode("[b]hello[/b] [i]world[/i]"), "hello world");
     }
+
+    #[test]
+    fn italic_html() {
+        assert_eq!(BBCodeParser::to_html("[i]x[/i]"), "<em>x</em>");
+    }
+
+    #[test]
+    fn underline_html() {
+        assert_eq!(BBCodeParser::to_html("[u]x[/u]"), "<u>x</u>");
+    }
+
+    #[test]
+    fn strike_html() {
+        assert_eq!(BBCodeParser::to_html("[s]x[/s]"), "<s>x</s>");
+    }
+
+    #[test]
+    fn url_with_param() {
+        assert_eq!(
+            BBCodeParser::to_html("[url=https://ex.com]click[/url]"),
+            "<a href=\"https://ex.com\">click</a>"
+        );
+    }
+
+    #[test]
+    fn url_simple() {
+        assert_eq!(
+            BBCodeParser::to_html("[url]https://ex.com[/url]"),
+            "<a href=\"https://ex.com\">https://ex.com</a>"
+        );
+    }
+
+    #[test]
+    fn image_tag() {
+        assert_eq!(
+            BBCodeParser::to_html("[img]pic.png[/img]"),
+            "<img src=\"pic.png\" />"
+        );
+    }
+
+    #[test]
+    fn nested_bold_italic() {
+        // Inner tags processed first
+        let result = BBCodeParser::to_html("[b][i]text[/i][/b]");
+        assert_eq!(result, "<strong><em>text</em></strong>");
+    }
+
+    #[test]
+    fn plain_text_url_different_text() {
+        let result = BBCodeParser::to_plain("[url=https://ex.com]click[/url]");
+        assert_eq!(result, "click (https://ex.com)");
+    }
+
+    #[test]
+    fn plain_text_url_same_text() {
+        let result = BBCodeParser::to_plain("[url]https://ex.com[/url]");
+        assert_eq!(result, "https://ex.com");
+    }
+
+    #[test]
+    fn plain_text_image() {
+        assert_eq!(BBCodeParser::to_plain("[img]pic.png[/img]"), "[Image: pic.png]");
+    }
+
+    #[test]
+    fn ansi_bold() {
+        let result = BBCodeParser::to_ansi("[b]hi[/b]");
+        assert_eq!(result, "\x1b[1mhi\x1b[0m");
+    }
+
+    #[test]
+    fn ansi_color_red() {
+        let result = BBCodeParser::to_ansi("[color=red]err[/color]");
+        assert_eq!(result, "\x1b[31merr\x1b[0m");
+    }
+
+    #[test]
+    fn ansi_unknown_color_uses_default() {
+        let result = BBCodeParser::to_ansi("[color=#ff0000]x[/color]");
+        assert_eq!(result, "\x1b[39mx\x1b[0m");
+    }
+
+    #[test]
+    fn no_tags_unchanged() {
+        assert_eq!(BBCodeParser::to_html("plain text"), "plain text");
+        assert_eq!(BBCodeParser::to_plain("plain text"), "plain text");
+    }
+
+    #[test]
+    fn malformed_tags_unchanged() {
+        // Unclosed tags remain as-is
+        assert_eq!(BBCodeParser::to_html("[b]open"), "[b]open");
+    }
+
+    #[test]
+    fn size_html() {
+        assert_eq!(
+            BBCodeParser::to_html("[size=12]big[/size]"),
+            "<span style=\"font-size: 12px\">big</span>"
+        );
+    }
 }

@@ -211,3 +211,55 @@ pub trait EventHandler: Send + Sync {
     /// Called when a user leaves the server
     async fn on_user_left(&self, _user: &User, _reason: &str) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codec_id_roundtrip() {
+        let codecs = [
+            AudioCodec::SpeexNarrowband,
+            AudioCodec::SpeexWideband,
+            AudioCodec::SpeexUltraWideband,
+            AudioCodec::CeltMono,
+            AudioCodec::OpusVoice,
+            AudioCodec::OpusMusic,
+        ];
+        for codec in &codecs {
+            let id = codec.id();
+            let restored = AudioCodec::from_id(id).unwrap();
+            assert_eq!(*codec, restored);
+        }
+    }
+
+    #[test]
+    fn codec_ids_are_sequential() {
+        assert_eq!(AudioCodec::SpeexNarrowband.id(), 0);
+        assert_eq!(AudioCodec::SpeexWideband.id(), 1);
+        assert_eq!(AudioCodec::SpeexUltraWideband.id(), 2);
+        assert_eq!(AudioCodec::CeltMono.id(), 3);
+        assert_eq!(AudioCodec::OpusVoice.id(), 4);
+        assert_eq!(AudioCodec::OpusMusic.id(), 5);
+    }
+
+    #[test]
+    fn invalid_codec_id_returns_none() {
+        assert!(AudioCodec::from_id(6).is_none());
+        assert!(AudioCodec::from_id(255).is_none());
+    }
+
+    #[test]
+    fn opus_codecs_are_opus() {
+        assert!(AudioCodec::OpusVoice.is_opus());
+        assert!(AudioCodec::OpusMusic.is_opus());
+    }
+
+    #[test]
+    fn non_opus_codecs_are_not_opus() {
+        assert!(!AudioCodec::SpeexNarrowband.is_opus());
+        assert!(!AudioCodec::SpeexWideband.is_opus());
+        assert!(!AudioCodec::SpeexUltraWideband.is_opus());
+        assert!(!AudioCodec::CeltMono.is_opus());
+    }
+}

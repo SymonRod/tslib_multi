@@ -119,3 +119,76 @@ impl Error {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_error_construction() {
+        let err = Error::server(256, "not found");
+        match err {
+            Error::Server { code, message } => {
+                assert_eq!(code, 256);
+                assert_eq!(message, "not found");
+            }
+            _ => panic!("expected Server variant"),
+        }
+    }
+
+    #[test]
+    fn permission_denied_construction() {
+        let err = Error::permission_denied("b_client_kick");
+        match err {
+            Error::PermissionDenied { permission } => {
+                assert_eq!(permission, "b_client_kick");
+            }
+            _ => panic!("expected PermissionDenied variant"),
+        }
+    }
+
+    #[test]
+    fn timeout_is_recoverable() {
+        assert!(Error::Timeout.is_recoverable());
+    }
+
+    #[test]
+    fn connection_lost_is_recoverable() {
+        let err = Error::Connection(ConnectionError::ConnectionLost("reset".into()));
+        assert!(err.is_recoverable());
+    }
+
+    #[test]
+    fn config_error_is_not_recoverable() {
+        let err = Error::Config("bad".into());
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn server_error_is_not_recoverable() {
+        assert!(!Error::server(1, "x").is_recoverable());
+    }
+
+    #[test]
+    fn not_connected_is_not_recoverable() {
+        let err = Error::Connection(ConnectionError::NotConnected);
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn error_display_server() {
+        let err = Error::server(512, "banned");
+        assert_eq!(format!("{}", err), "Server error: 512 - banned");
+    }
+
+    #[test]
+    fn error_display_permission() {
+        let err = Error::permission_denied("kick");
+        assert_eq!(format!("{}", err), "Permission denied: kick");
+    }
+
+    #[test]
+    fn error_display_timeout() {
+        assert_eq!(format!("{}", Error::Timeout), "Operation timed out");
+    }
+}

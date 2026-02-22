@@ -213,4 +213,74 @@ mod tests {
         assert_eq!(encoder.channels, 1);
         assert_eq!(encoder.frame_size, config.frame_size_samples());
     }
+
+    #[test]
+    fn encoder_stereo() {
+        let mut config = AudioConfig::default();
+        config.channels = 2;
+        let encoder = OpusEncoder::new(&config).unwrap();
+        assert_eq!(encoder.channels, 2);
+    }
+
+    #[test]
+    fn invalid_channel_count() {
+        let mut config = AudioConfig::default();
+        config.channels = 3;
+        assert!(OpusEncoder::new(&config).is_err());
+    }
+
+    #[test]
+    fn opus_channels_mapping() {
+        assert!(matches!(opus_channels(1).unwrap(), opus::Channels::Mono));
+        assert!(matches!(opus_channels(2).unwrap(), opus::Channels::Stereo));
+        assert!(opus_channels(0).is_err());
+        assert!(opus_channels(5).is_err());
+    }
+
+    #[test]
+    fn opus_application_mapping() {
+        assert!(matches!(opus_application(OpusApplication::Voip), opus::Application::Voip));
+        assert!(matches!(opus_application(OpusApplication::Audio), opus::Application::Audio));
+        assert!(matches!(opus_application(OpusApplication::LowDelay), opus::Application::LowDelay));
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let config = AudioConfig::default();
+        let codec = OpusCodec::new(config.clone()).unwrap();
+        let mut encoder = codec.create_encoder().unwrap();
+        let mut decoder = codec.create_decoder().unwrap();
+
+        let frame_size = config.frame_size_samples();
+        let pcm_in: Vec<i16> = (0..frame_size as i16).collect();
+        let mut encoded = vec![0u8; 4000];
+        let len = encoder.encode(&pcm_in, &mut encoded).unwrap();
+        assert!(len > 0);
+
+        let mut pcm_out = vec![0i16; frame_size];
+        let decoded_len = decoder.decode(&encoded[..len], &mut pcm_out).unwrap();
+        assert_eq!(decoded_len, frame_size);
+    }
+
+    #[test]
+    fn packet_size_estimate() {
+        let config = AudioConfig::default();
+        let encoder = OpusEncoder::new(&config).unwrap();
+        assert_eq!(encoder.packet_size(), 256);
+    }
+
+    #[test]
+    fn encoder_reset() {
+        let config = AudioConfig::default();
+        let mut encoder = OpusEncoder::new(&config).unwrap();
+        assert!(encoder.reset().is_ok());
+    }
+
+    #[test]
+    fn decoder_reset() {
+        let config = AudioConfig::default();
+        let codec = OpusCodec::new(config).unwrap();
+        let mut decoder = codec.create_decoder().unwrap();
+        assert!(decoder.reset().is_ok());
+    }
 }

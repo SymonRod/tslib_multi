@@ -152,3 +152,121 @@ impl BotConfig {
         BotConfigBuilder::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_fails_without_address() {
+        let result = BotConfigBuilder::default().build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_succeeds_with_address() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .build()
+            .unwrap();
+        assert_eq!(config.address, "localhost");
+    }
+
+    #[test]
+    fn default_nickname() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .build()
+            .unwrap();
+        assert_eq!(config.nickname, "TsLibBot");
+    }
+
+    #[test]
+    fn custom_nickname() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .nickname("MyBot")
+            .build()
+            .unwrap();
+        assert_eq!(config.nickname, "MyBot");
+    }
+
+    #[test]
+    fn default_command_prefix() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .build()
+            .unwrap();
+        assert_eq!(config.command_prefix, "!");
+    }
+
+    #[test]
+    fn custom_command_prefix() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .command_prefix(".")
+            .build()
+            .unwrap();
+        assert_eq!(config.command_prefix, ".");
+    }
+
+    #[test]
+    fn default_reconnect_delay() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .build()
+            .unwrap();
+        assert_eq!(config.reconnect_delay, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn zero_reconnect_delay_becomes_5s() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .reconnect_delay(Duration::ZERO)
+            .build()
+            .unwrap();
+        assert_eq!(config.reconnect_delay, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn custom_reconnect_delay() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .reconnect_delay(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        assert_eq!(config.reconnect_delay, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn single_owner() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .owner("uid1")
+            .build()
+            .unwrap();
+        assert_eq!(config.owners, vec!["uid1"]);
+    }
+
+    #[test]
+    fn multiple_owners() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .owner("uid1")
+            .owners(vec!["uid2", "uid3"])
+            .build()
+            .unwrap();
+        assert_eq!(config.owners, vec!["uid1", "uid2", "uid3"]);
+    }
+
+    #[test]
+    fn identity_auto_created() {
+        let config = BotConfigBuilder::default()
+            .address("localhost")
+            .build()
+            .unwrap();
+        // Identity was auto-created, so it should exist
+        assert!(!config.identity.unique_id().is_empty());
+    }
+}

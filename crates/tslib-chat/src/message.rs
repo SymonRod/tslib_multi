@@ -190,3 +190,127 @@ impl Default for MessageBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_ids_auto_increment() {
+        let m1 = ChatMessage::new(1, "A", MessageTarget::Server, "hi");
+        let m2 = ChatMessage::new(1, "A", MessageTarget::Server, "ho");
+        assert!(m2.id > m1.id);
+    }
+
+    #[test]
+    fn is_private() {
+        let m = ChatMessage::new(1, "A", MessageTarget::Private(2), "hi");
+        assert!(m.is_private());
+        assert!(!m.is_channel());
+        assert!(!m.is_server());
+    }
+
+    #[test]
+    fn is_channel() {
+        let m = ChatMessage::new(1, "A", MessageTarget::Channel(5), "hi");
+        assert!(m.is_channel());
+        assert!(!m.is_private());
+        assert!(!m.is_server());
+    }
+
+    #[test]
+    fn is_server() {
+        let m = ChatMessage::new(1, "A", MessageTarget::Server, "hi");
+        assert!(m.is_server());
+        assert!(!m.is_private());
+        assert!(!m.is_channel());
+    }
+
+    #[test]
+    fn plain_text_strips_bbcode() {
+        let m = ChatMessage::new(1, "A", MessageTarget::Server, "[b]hello[/b]");
+        assert_eq!(m.plain_text(), "hello");
+    }
+
+    #[test]
+    fn builder_content() {
+        let msg = MessageBuilder::new().content("hello").build();
+        assert_eq!(msg, "hello");
+    }
+
+    #[test]
+    fn builder_text_appends() {
+        let msg = MessageBuilder::new().text("a").text("b").build();
+        assert_eq!(msg, "ab");
+    }
+
+    #[test]
+    fn builder_bold() {
+        let msg = MessageBuilder::new().bold("x").build();
+        assert_eq!(msg, "[b]x[/b]");
+    }
+
+    #[test]
+    fn builder_italic() {
+        let msg = MessageBuilder::new().italic("x").build();
+        assert_eq!(msg, "[i]x[/i]");
+    }
+
+    #[test]
+    fn builder_underline() {
+        let msg = MessageBuilder::new().underline("x").build();
+        assert_eq!(msg, "[u]x[/u]");
+    }
+
+    #[test]
+    fn builder_color() {
+        let msg = MessageBuilder::new().color("red", "x").build();
+        assert_eq!(msg, "[color=red]x[/color]");
+    }
+
+    #[test]
+    fn builder_url_with_text() {
+        let msg = MessageBuilder::new().url("http://ex.com", Some("click")).build();
+        assert_eq!(msg, "[url=http://ex.com]click[/url]");
+    }
+
+    #[test]
+    fn builder_url_without_text() {
+        let msg = MessageBuilder::new().url("http://ex.com", None).build();
+        assert_eq!(msg, "[url=http://ex.com]http://ex.com[/url]");
+    }
+
+    #[test]
+    fn builder_newline() {
+        let msg = MessageBuilder::new().text("a").newline().text("b").build();
+        assert_eq!(msg, "a\nb");
+    }
+
+    #[test]
+    fn builder_chaining() {
+        let msg = MessageBuilder::new()
+            .bold("hi")
+            .text(" ")
+            .italic("world")
+            .build();
+        assert_eq!(msg, "[b]hi[/b] [i]world[/i]");
+    }
+
+    #[test]
+    fn builder_targets() {
+        let b = MessageBuilder::new().to_server();
+        assert_eq!(b.target(), Some(MessageTarget::Server));
+
+        let b = MessageBuilder::new().to_channel(42);
+        assert_eq!(b.target(), Some(MessageTarget::Channel(42)));
+
+        let b = MessageBuilder::new().to_user(7);
+        assert_eq!(b.target(), Some(MessageTarget::Private(7)));
+    }
+
+    #[test]
+    fn builder_default_has_no_target() {
+        let b = MessageBuilder::new();
+        assert_eq!(b.target(), None);
+    }
+}

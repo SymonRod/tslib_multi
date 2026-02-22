@@ -252,6 +252,152 @@ pub struct ServerGroup {
     pub needed_member_remove_power: i32,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_channel(id: u64, parent_id: u64, name: &str) -> Channel {
+        Channel {
+            id,
+            parent_id,
+            name: name.to_string(),
+            max_clients: -1,
+            ..Default::default()
+        }
+    }
+
+    fn make_user(id: u16, channel_id: u64, nickname: &str) -> User {
+        User {
+            id,
+            channel_id,
+            nickname: nickname.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn spacer_detection() {
+        assert!(Channel { name: "[spacer0]".into(), ..Default::default() }.is_spacer());
+        assert!(Channel { name: "[cspacer]Center".into(), ..Default::default() }.is_spacer());
+        assert!(Channel { name: "[lspacer]Left".into(), ..Default::default() }.is_spacer());
+        assert!(Channel { name: "[rspacer]Right".into(), ..Default::default() }.is_spacer());
+        assert!(!Channel { name: "General".into(), ..Default::default() }.is_spacer());
+    }
+
+    #[test]
+    fn unlimited_channel() {
+        let ch = Channel { max_clients: -1, ..Default::default() };
+        assert!(ch.is_unlimited());
+    }
+
+    #[test]
+    fn limited_channel() {
+        let ch = Channel { max_clients: 10, ..Default::default() };
+        assert!(!ch.is_unlimited());
+    }
+
+    #[test]
+    fn full_channel() {
+        let ch = Channel { max_clients: 2, ..Default::default() };
+        assert!(ch.is_full(2));
+        assert!(ch.is_full(3));
+        assert!(!ch.is_full(1));
+    }
+
+    #[test]
+    fn unlimited_never_full() {
+        let ch = Channel { max_clients: -1, ..Default::default() };
+        assert!(!ch.is_full(1000));
+    }
+
+    #[test]
+    fn user_can_talk() {
+        let u = User {
+            is_input_muted: false,
+            has_input_hardware: true,
+            is_talker: true,
+            ..Default::default()
+        };
+        assert!(u.can_talk());
+    }
+
+    #[test]
+    fn muted_user_cannot_talk() {
+        let u = User {
+            is_input_muted: true,
+            has_input_hardware: true,
+            is_talker: true,
+            ..Default::default()
+        };
+        assert!(!u.can_talk());
+    }
+
+    #[test]
+    fn no_hardware_cannot_talk() {
+        let u = User {
+            is_input_muted: false,
+            has_input_hardware: false,
+            is_talker: true,
+            ..Default::default()
+        };
+        assert!(!u.can_talk());
+    }
+
+    #[test]
+    fn query_client_detection() {
+        let normal = User { client_type: 0, ..Default::default() };
+        let query = User { client_type: 1, ..Default::default() };
+        assert!(!normal.is_query());
+        assert!(query.is_query());
+    }
+
+    #[test]
+    fn server_state_lookups() {
+        let mut state = ServerState::default();
+        state.channels.insert(1, make_channel(1, 0, "Root"));
+        state.channels.insert(2, make_channel(2, 1, "Child"));
+        state.users.insert(10, make_user(10, 1, "Alice"));
+
+        assert_eq!(state.channel(1).unwrap().name, "Root");
+        assert!(state.channel(99).is_none());
+        assert_eq!(state.user(10).unwrap().nickname, "Alice");
+        assert!(state.user(99).is_none());
+    }
+
+    #[test]
+    fn users_in_channel() {
+        let mut state = ServerState::default();
+        state.users.insert(1, make_user(1, 10, "A"));
+        state.users.insert(2, make_user(2, 10, "B"));
+        state.users.insert(3, make_user(3, 20, "C"));
+        assert_eq!(state.users_in_channel(10).len(), 2);
+        assert_eq!(state.users_in_channel(20).len(), 1);
+        assert_eq!(state.users_in_channel(99).len(), 0);
+    }
+
+    #[test]
+    fn root_and_child_channels() {
+        let mut state = ServerState::default();
+        state.channels.insert(1, make_channel(1, 0, "Root1"));
+        state.channels.insert(2, make_channel(2, 0, "Root2"));
+        state.channels.insert(3, make_channel(3, 1, "Child"));
+        assert_eq!(state.root_channels().len(), 2);
+        assert_eq!(state.child_channels(1).len(), 1);
+        assert_eq!(state.child_channels(2).len(), 0);
+    }
+
+    #[test]
+    fn find_by_name() {
+        let mut state = ServerState::default();
+        state.channels.insert(1, make_channel(1, 0, "Lobby"));
+        state.users.insert(1, make_user(1, 1, "Bob"));
+        assert_eq!(state.find_channel_by_name("Lobby").unwrap().id, 1);
+        assert!(state.find_channel_by_name("Nope").is_none());
+        assert_eq!(state.find_user_by_name("Bob").unwrap().id, 1);
+        assert!(state.find_user_by_name("Nope").is_none());
+    }
+}
+
 /// Channel group information
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChannelGroup {

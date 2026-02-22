@@ -243,3 +243,96 @@ mod hex {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Identity;
+
+    fn make_config(address: &str) -> Result<ClientConfig> {
+        ClientConfigBuilder::default()
+            .address(address)
+            .identity(Identity::create().unwrap())
+            .build()
+    }
+
+    #[test]
+    fn normalize_address_adds_default_port() {
+        let config = make_config("localhost").unwrap();
+        assert_eq!(config.address, "localhost:9987");
+    }
+
+    #[test]
+    fn normalize_address_preserves_explicit_port() {
+        let config = make_config("localhost:1234").unwrap();
+        assert_eq!(config.address, "localhost:1234");
+    }
+
+    #[test]
+    fn host_returns_host_part() {
+        let config = make_config("example.com:9987").unwrap();
+        assert_eq!(config.host(), "example.com");
+    }
+
+    #[test]
+    fn port_parses_from_address() {
+        let config = make_config("example.com:1234").unwrap();
+        assert_eq!(config.port(), 1234);
+    }
+
+    #[test]
+    fn port_defaults_to_9987() {
+        let mut config = make_config("example.com").unwrap();
+        config.address = "example.com".to_string();
+        assert_eq!(config.port(), 9987);
+    }
+
+    #[test]
+    fn build_fails_without_address() {
+        let result = ClientConfigBuilder::default()
+            .identity(Identity::create().unwrap())
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_fails_without_identity() {
+        let result = ClientConfigBuilder::default()
+            .address("localhost")
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_nickname_is_tslib_user() {
+        let config = make_config("localhost").unwrap();
+        assert_eq!(config.nickname, "TsLibUser");
+    }
+
+    #[test]
+    fn custom_nickname_is_used() {
+        let config = ClientConfigBuilder::default()
+            .address("localhost")
+            .identity(Identity::create().unwrap())
+            .nickname("Bot")
+            .build()
+            .unwrap();
+        assert_eq!(config.nickname, "Bot");
+    }
+
+    #[test]
+    fn hardware_id_is_32_hex_chars() {
+        let config = make_config("localhost").unwrap();
+        assert_eq!(config.hardware_id.len(), 32);
+        assert!(config.hardware_id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn builder_defaults() {
+        let builder = ClientConfigBuilder::default();
+        assert_eq!(builder.connect_timeout, Duration::from_secs(10));
+        assert!(builder.auto_reconnect);
+        assert_eq!(builder.reconnect_delay, Duration::from_secs(5));
+        assert_eq!(builder.max_reconnect_attempts, 5);
+    }
+}

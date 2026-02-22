@@ -221,7 +221,8 @@ impl Client {
     ///
     /// This waits until we receive the first BookEvents, indicating
     /// the connection is fully established. It also automatically
-    /// synchronizes the server state (users, channels, etc.).
+    /// subscribes to all channels and synchronizes the server state
+    /// (users, channels, etc.).
     pub async fn wait_connected(&mut self) -> Result<()> {
         use futures::future;
 
@@ -240,6 +241,9 @@ impl Client {
             Some(Ok(_)) => {
                 // Update connection state
                 self.state = ConnectionState::Connected;
+
+                // Subscribe to all channels so we can see all users
+                self.subscribe_all_channels()?;
 
                 // Synchronize full state from server
                 self.sync_state()?;
@@ -262,6 +266,29 @@ impl Client {
             Some(Err(e)) => Err(ConnectionError::ConnectFailed(e.to_string()).into()),
             None => Err(ConnectionError::ConnectFailed("Connection closed".to_string()).into()),
         }
+    }
+
+    /// Subscribe to all channels on the server
+    ///
+    /// This makes all users visible regardless of which channel they are in.
+    pub fn subscribe_all_channels(&mut self) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        let cmd = OutCommand::new(
+            Direction::C2S,
+            Flags::empty(),
+            PacketType::Command,
+            "channelsubscribeall",
+        );
+
+        cmd.send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        debug!("Subscribed to all channels");
+        Ok(())
     }
 
     /// Process a stream item from tsclientlib

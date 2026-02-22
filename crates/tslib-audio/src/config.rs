@@ -116,3 +116,73 @@ impl OpusApplication {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_values() {
+        let cfg = AudioConfig::default();
+        assert_eq!(cfg.sample_rate, 48000);
+        assert_eq!(cfg.channels, 1);
+        assert_eq!(cfg.frame_size_ms, 20);
+        assert_eq!(cfg.bitrate, 64000);
+        assert_eq!(cfg.opus_application, OpusApplication::Voip);
+        assert!(cfg.vad_enabled);
+        assert!(cfg.noise_suppression);
+        assert!(!cfg.echo_cancellation);
+        assert_eq!(cfg.input_volume, 1.0);
+        assert_eq!(cfg.output_volume, 1.0);
+    }
+
+    #[test]
+    fn music_preset() {
+        let cfg = AudioConfig::music();
+        assert_eq!(cfg.channels, 2);
+        assert_eq!(cfg.bitrate, 96000);
+        assert_eq!(cfg.opus_application, OpusApplication::Audio);
+        assert!(!cfg.vad_enabled);
+        assert!(!cfg.noise_suppression);
+        // inherited defaults
+        assert_eq!(cfg.sample_rate, 48000);
+    }
+
+    #[test]
+    fn low_latency_preset() {
+        let cfg = AudioConfig::low_latency();
+        assert_eq!(cfg.frame_size_ms, 10);
+        assert_eq!(cfg.playback_buffer_ms, 40);
+        // inherited defaults
+        assert_eq!(cfg.sample_rate, 48000);
+        assert_eq!(cfg.channels, 1);
+    }
+
+    #[test]
+    fn frame_size_samples_default() {
+        let cfg = AudioConfig::default();
+        // 48000 * 20 / 1000 = 960
+        assert_eq!(cfg.frame_size_samples(), 960);
+    }
+
+    #[test]
+    fn frame_size_samples_low_latency() {
+        let cfg = AudioConfig::low_latency();
+        // 48000 * 10 / 1000 = 480
+        assert_eq!(cfg.frame_size_samples(), 480);
+    }
+
+    #[test]
+    fn playback_buffer_samples() {
+        let cfg = AudioConfig::default();
+        // 48000 * 60 / 1000 = 2880
+        assert_eq!(cfg.playback_buffer_samples(), 2880);
+    }
+
+    #[test]
+    fn opus_application_constants() {
+        assert_eq!(OpusApplication::Voip.to_opus_const(), 2048);
+        assert_eq!(OpusApplication::Audio.to_opus_const(), 2049);
+        assert_eq!(OpusApplication::LowDelay.to_opus_const(), 2051);
+    }
+}

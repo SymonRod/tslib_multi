@@ -286,3 +286,179 @@ where
         self.help.as_deref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_ctx(command: &str, args: Vec<&str>) -> CommandContext {
+        CommandContext::new(
+            1,
+            "Alice".to_string(),
+            Some("uid=abc".to_string()),
+            command.to_string(),
+            args.into_iter().map(String::from).collect(),
+            format!("!{}", command),
+            true,
+            |_msg| Box::pin(async { Ok(()) }),
+        )
+    }
+
+    fn dummy_handler() -> impl CommandHandler {
+        FnHandler::new(|_ctx| async { Ok(()) })
+    }
+
+    // --- CommandContext tests ---
+
+    #[test]
+    fn arg_returns_correct_index() {
+        let ctx = make_ctx("test", vec!["a", "b", "c"]);
+        assert_eq!(ctx.arg(0), Some("a"));
+        assert_eq!(ctx.arg(1), Some("b"));
+        assert_eq!(ctx.arg(2), Some("c"));
+        assert_eq!(ctx.arg(3), None);
+    }
+
+    #[test]
+    fn arg_or_returns_default() {
+        let ctx = make_ctx("test", vec!["a"]);
+        assert_eq!(ctx.arg_or(0, "x"), "a");
+        assert_eq!(ctx.arg_or(5, "default"), "default");
+    }
+
+    #[test]
+    fn args_string_joins() {
+        let ctx = make_ctx("test", vec!["hello", "world"]);
+        assert_eq!(ctx.args_string(), "hello world");
+    }
+
+    #[test]
+    fn args_string_empty() {
+        let ctx = make_ctx("test", vec![]);
+        assert_eq!(ctx.args_string(), "");
+    }
+
+    #[test]
+    fn args_from_index() {
+        let ctx = make_ctx("test", vec!["a", "b", "c"]);
+        assert_eq!(ctx.args_from(1), "b c");
+    }
+
+    #[test]
+    fn require_args_ok() {
+        let ctx = make_ctx("test", vec!["a", "b"]);
+        assert!(ctx.require_args(2).is_ok());
+        assert!(ctx.require_args(1).is_ok());
+    }
+
+    #[test]
+    fn require_args_fail() {
+        let ctx = make_ctx("test", vec!["a"]);
+        assert!(ctx.require_args(2).is_err());
+    }
+
+    // --- CommandRegistry tests ---
+
+    #[test]
+    fn parse_with_prefix() {
+        let reg = CommandRegistry::new("!");
+        let result = reg.parse("!help arg1 arg2");
+        assert!(result.is_some());
+        let (cmd, args) = result.unwrap();
+        assert_eq!(cmd, "help");
+        assert_eq!(args, vec!["arg1", "arg2"]);
+    }
+
+    #[test]
+    fn parse_no_prefix_returns_none() {
+        let reg = CommandRegistry::new("!");
+        assert!(reg.parse("help").is_none());
+    }
+
+    #[test]
+    fn parse_command_no_args() {
+        let reg = CommandRegistry::new("!");
+        let (cmd, args) = reg.parse("!ping").unwrap();
+        assert_eq!(cmd, "ping");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parse_multi_char_prefix() {
+        let reg = CommandRegistry::new("!!");
+        let (cmd, args) = reg.parse("!!help me").unwrap();
+        assert_eq!(cmd, "help");
+        assert_eq!(args, vec!["me"]);
+    }
+
+    #[test]
+    fn register_and_get() {
+        let mut reg = CommandRegistry::new("!");
+        reg.register(Command::new("ping", dummy_handler()));
+        assert!(reg.get("ping").is_some());
+        assert!(reg.get("nope").is_none());
+    }
+
+    #[test]
+    fn register_with_alias() {
+        let mut reg = CommandRegistry::new("!");
+        reg.register(Command::new("help", dummy_handler()).alias("h").alias("?"));
+        assert!(reg.get("help").is_some());
+        assert!(reg.get("h").is_some());
+        assert!(reg.get("?").is_some());
+    }
+
+    #[test]
+    fn all_commands_deduplicates_aliases() {
+        let mut reg = CommandRegistry::new("!");
+        reg.register(Command::new("help", dummy_handler()).alias("h"));
+        let all = reg.all_commands();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "help");
+    }
+
+    #[test]
+    fn visible_commands_excludes_hidden() {
+        let mut reg = CommandRegistry::new("!");
+        reg.register(Command::new("help", dummy_handler()));
+        reg.register(Command::new("secret", dummy_handler()).hidden());
+        let visible = reg.visible_commands();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "help");
+    }
+
+    #[test]
+    fn all_commands_sorted_by_name() {
+        let mut reg = CommandRegistry::new("!");
+        reg.register(Command::new("zzz", dummy_handler()));
+        reg.register(Command::new("aaa", dummy_handler()));
+        let all = reg.all_commands();
+        assert_eq!(all[0].name, "aaa");
+        assert_eq!(all[1].name, "zzz");
+    }
+
+    // --- Command builder tests ---
+
+    #[test]
+    fn command_builder_flags() {
+        let cmd = Command::new("test", dummy_handler())
+            .help("Help text")
+            .usage("!test <arg>")
+            .owner_only()
+            .hidden();
+        assert_eq!(cmd.help.as_deref(), Some("Help text"));
+        assert_eq!(cmd.usage.as_deref(), Some("!test <arg>"));
+        assert!(cmd.owner_only);
+        assert!(cmd.hidden);
+    }
+
+    #[test]
+    fn command_default_flags() {
+        let cmd = Command::new("test", dummy_handler());
+        assert!(!cmd.owner_only);
+        assert!(!cmd.hidden);
+        assert!(cmd.help.is_none());
+        assert!(cmd.usage.is_none());
+        assert!(cmd.aliases.is_empty());
+    }
+}

@@ -200,3 +200,59 @@ impl std::fmt::Debug for Connection {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_is_connected() {
+        assert!(ConnectionState::Connected.is_connected());
+    }
+
+    #[test]
+    fn initializing_is_connected() {
+        assert!(ConnectionState::Initializing.is_connected());
+    }
+
+    #[test]
+    fn disconnected_is_not_connected() {
+        assert!(!ConnectionState::Disconnected.is_connected());
+    }
+
+    #[test]
+    fn connecting_is_not_connected() {
+        assert!(!ConnectionState::Connecting.is_connected());
+    }
+
+    #[test]
+    fn reconnecting_is_not_connected() {
+        assert!(!ConnectionState::Reconnecting.is_connected());
+    }
+
+    #[test]
+    fn connecting_is_connecting() {
+        assert!(ConnectionState::Connecting.is_connecting());
+    }
+
+    #[test]
+    fn reconnecting_is_connecting() {
+        assert!(ConnectionState::Reconnecting.is_connecting());
+    }
+
+    #[test]
+    fn disconnected_is_not_connecting() {
+        assert!(!ConnectionState::Disconnected.is_connecting());
+    }
+
+    #[test]
+    fn connected_is_not_connecting() {
+        assert!(!ConnectionState::Connected.is_connecting());
+    }
+
+    #[test]
+    fn state_equality() {
+        assert_eq!(ConnectionState::Connected, ConnectionState::Connected);
+        assert_ne!(ConnectionState::Connected, ConnectionState::Disconnected);
+    }
+}

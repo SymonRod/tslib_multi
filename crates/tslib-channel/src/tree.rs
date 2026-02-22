@@ -233,3 +233,180 @@ impl Default for ChannelTree {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ch(id: u64, parent_id: u64, name: &str, order: i32) -> Channel {
+        Channel {
+            id,
+            parent_id,
+            name: name.to_string(),
+            order,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn new_tree_is_empty() {
+        let tree = ChannelTree::new();
+        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 0);
+    }
+
+    #[test]
+    fn add_root_channel() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Root", 0));
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.roots().len(), 1);
+        assert_eq!(tree.roots()[0].name, "Root");
+    }
+
+    #[test]
+    fn add_child_channel() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Root", 0));
+        tree.add_channel(ch(2, 1, "Child", 0));
+        assert_eq!(tree.children(1).len(), 1);
+        assert_eq!(tree.children(1)[0].name, "Child");
+    }
+
+    #[test]
+    fn remove_channel() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Root", 0));
+        let removed = tree.remove_channel(1);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().name, "Root");
+        assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_none() {
+        let mut tree = ChannelTree::new();
+        assert!(tree.remove_channel(99).is_none());
+    }
+
+    #[test]
+    fn update_channel_same_parent() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Old", 0));
+        tree.update_channel(ch(1, 0, "New", 0));
+        assert_eq!(tree.get(1).unwrap().name, "New");
+        assert_eq!(tree.len(), 1);
+    }
+
+    #[test]
+    fn update_channel_reparent() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Root1", 0));
+        tree.add_channel(ch(2, 0, "Root2", 1));
+        tree.add_channel(ch(3, 1, "Child", 0));
+        // Move child from Root1 to Root2
+        tree.update_channel(ch(3, 2, "Child", 0));
+        assert_eq!(tree.children(1).len(), 0);
+        assert_eq!(tree.children(2).len(), 1);
+    }
+
+    #[test]
+    fn get_channel() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(5, 0, "Test", 0));
+        assert_eq!(tree.get(5).unwrap().name, "Test");
+        assert!(tree.get(99).is_none());
+    }
+
+    #[test]
+    fn parent_lookup() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Root", 0));
+        tree.add_channel(ch(2, 1, "Child", 0));
+        assert_eq!(tree.parent(2).unwrap().name, "Root");
+        assert!(tree.parent(1).is_none()); // root has no parent (parent_id=0)
+    }
+
+    #[test]
+    fn path_to_channel() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Root", 0));
+        tree.add_channel(ch(2, 1, "Mid", 0));
+        tree.add_channel(ch(3, 2, "Leaf", 0));
+        let path = tree.path_to(3);
+        let names: Vec<&str> = path.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Root", "Mid", "Leaf"]);
+    }
+
+    #[test]
+    fn path_to_root() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Root", 0));
+        let path = tree.path_to(1);
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0].name, "Root");
+    }
+
+    #[test]
+    fn find_by_name() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "Lobby", 0));
+        tree.add_channel(ch(2, 0, "Music", 1));
+        assert_eq!(tree.find_by_name("Music").unwrap().id, 2);
+        assert!(tree.find_by_name("Nope").is_none());
+    }
+
+    #[test]
+    fn find_all_with_predicate() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "A", 0));
+        tree.add_channel(ch(2, 0, "B", 1));
+        tree.add_channel(ch(3, 0, "AB", 2));
+        let results = tree.find_all(|c| c.name.contains('A'));
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn all_channels_flat() {
+        let mut tree = ChannelTree::new();
+        tree.add_channel(ch(1, 0, "R", 0));
+        tree.add_channel(ch(2, 1, "C", 0));
+        assert_eq!(tree.all_channels().len(), 2);
+    }
+
+    #[test]
+    fn from_channels_builds_structure() {
+        let channels = vec![
+            ch(1, 0, "Root", 0),
+            ch(2, 1, "Child1", 0),
+            ch(3, 1, "Child2", 1),
+        ];
+        let tree = ChannelTree::from_channels(channels);
+        assert_eq!(tree.roots().len(), 1);
+        assert_eq!(tree.children(1).len(), 2);
+    }
+
+    #[test]
+    fn print_tree_output() {
+        let channels = vec![
+            ch(1, 0, "Root", 0),
+            ch(2, 1, "Child", 0),
+        ];
+        let tree = ChannelTree::from_channels(channels);
+        let output = tree.print_tree();
+        assert!(output.contains("Root"));
+        assert!(output.contains("  Child"));
+    }
+
+    #[test]
+    fn from_channels_sorts_by_order() {
+        let channels = vec![
+            ch(1, 0, "B", 1),
+            ch(2, 0, "A", 0),
+        ];
+        let tree = ChannelTree::from_channels(channels);
+        let roots = tree.roots();
+        assert_eq!(roots[0].name, "A");
+        assert_eq!(roots[1].name, "B");
+    }
+}

@@ -230,3 +230,174 @@ impl ChannelBuilder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ch(id: u64, parent_id: u64, name: &str) -> Channel {
+        Channel {
+            id,
+            parent_id,
+            name: name.to_string(),
+            max_clients: -1,
+            ..Default::default()
+        }
+    }
+
+    // --- ChannelBuilder tests ---
+
+    #[test]
+    fn builder_defaults() {
+        let b = ChannelBuilder::new("Test");
+        let c = b.build().unwrap();
+        assert_eq!(c.name, "Test");
+        assert_eq!(c.codec, 4); // Opus Voice
+        assert_eq!(c.codec_quality, 6);
+        assert_eq!(c.max_clients, -1);
+        assert!(!c.is_permanent);
+        assert!(!c.is_semi_permanent);
+        assert!(!c.has_password);
+    }
+
+    #[test]
+    fn builder_no_name_returns_none() {
+        let b = ChannelBuilder::default();
+        assert!(b.build().is_none());
+    }
+
+    #[test]
+    fn builder_codec_quality_clamp_low() {
+        let c = ChannelBuilder::new("X").codec_quality(0).build().unwrap();
+        assert_eq!(c.codec_quality, 1);
+    }
+
+    #[test]
+    fn builder_codec_quality_clamp_high() {
+        let c = ChannelBuilder::new("X").codec_quality(20).build().unwrap();
+        assert_eq!(c.codec_quality, 10);
+    }
+
+    #[test]
+    fn builder_codec_quality_normal() {
+        let c = ChannelBuilder::new("X").codec_quality(8).build().unwrap();
+        assert_eq!(c.codec_quality, 8);
+    }
+
+    #[test]
+    fn builder_permanent_flag() {
+        let c = ChannelBuilder::new("X").permanent().build().unwrap();
+        assert!(c.is_permanent);
+        assert!(!c.is_semi_permanent);
+    }
+
+    #[test]
+    fn builder_semi_permanent_flag() {
+        let c = ChannelBuilder::new("X").semi_permanent().build().unwrap();
+        assert!(c.is_semi_permanent);
+        assert!(!c.is_permanent);
+    }
+
+    #[test]
+    fn builder_temporary_resets_both() {
+        let c = ChannelBuilder::new("X").permanent().temporary().build().unwrap();
+        assert!(!c.is_permanent);
+        assert!(!c.is_semi_permanent);
+    }
+
+    #[test]
+    fn builder_permanent_overrides_semi() {
+        let c = ChannelBuilder::new("X").semi_permanent().permanent().build().unwrap();
+        assert!(c.is_permanent);
+        assert!(!c.is_semi_permanent);
+    }
+
+    #[test]
+    fn builder_password_sets_has_password() {
+        let c = ChannelBuilder::new("X").password("secret").build().unwrap();
+        assert!(c.has_password);
+    }
+
+    #[test]
+    fn builder_parent_id() {
+        let c = ChannelBuilder::new("X").parent(42).build().unwrap();
+        assert_eq!(c.parent_id, 42);
+    }
+
+    #[test]
+    fn builder_topic_and_description() {
+        let c = ChannelBuilder::new("X")
+            .topic("t")
+            .description("d")
+            .build()
+            .unwrap();
+        assert_eq!(c.topic.unwrap(), "t");
+        assert_eq!(c.description.unwrap(), "d");
+    }
+
+    // --- ChannelManager tests (async) ---
+
+    #[tokio::test]
+    async fn manager_add_and_get() {
+        let mgr = ChannelManager::new();
+        mgr.add_channel(ch(1, 0, "Root")).await;
+        let c = mgr.get_channel(1).await;
+        assert_eq!(c.unwrap().name, "Root");
+        assert!(mgr.get_channel(99).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn manager_remove() {
+        let mgr = ChannelManager::new();
+        mgr.add_channel(ch(1, 0, "Root")).await;
+        let removed = mgr.remove_channel(1).await;
+        assert!(removed.is_some());
+        assert!(mgr.get_channel(1).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn manager_current_channel() {
+        let mgr = ChannelManager::new();
+        assert!(mgr.current_channel().await.is_none());
+        mgr.set_current_channel(42).await;
+        assert_eq!(mgr.current_channel().await, Some(42));
+    }
+
+    #[tokio::test]
+    async fn manager_find_by_name() {
+        let mgr = ChannelManager::new();
+        mgr.add_channel(ch(1, 0, "Lobby")).await;
+        assert!(mgr.find_by_name("Lobby").await.is_some());
+        assert!(mgr.find_by_name("Nope").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn manager_joinable_excludes_spacers_and_passwords() {
+        let mgr = ChannelManager::new();
+        mgr.add_channel(ch(1, 0, "Normal")).await;
+        mgr.add_channel(Channel {
+            id: 2,
+            name: "[spacer0]---".into(),
+            ..Default::default()
+        }).await;
+        mgr.add_channel(Channel {
+            id: 3,
+            name: "Locked".into(),
+            has_password: true,
+            ..Default::default()
+        }).await;
+        let joinable = mgr.joinable_channels().await;
+        assert_eq!(joinable.len(), 1);
+        assert_eq!(joinable[0].name, "Normal");
+    }
+
+    #[tokio::test]
+    async fn manager_root_channels() {
+        let mgr = ChannelManager::new();
+        mgr.add_channel(ch(1, 0, "R1")).await;
+        mgr.add_channel(ch(2, 0, "R2")).await;
+        mgr.add_channel(ch(3, 1, "Child")).await;
+        let roots = mgr.root_channels().await;
+        assert_eq!(roots.len(), 2);
+    }
+}
