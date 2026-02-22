@@ -104,14 +104,12 @@ impl Identity {
 
     /// Export just the key string in tsclientlib format
     fn export_key_string(&self) -> String {
-        // Format: base64(counter:key_bytes)
+        // Format: counterVbase64(private_key_bytes)
         use base64::Engine;
         let key_bytes = self.inner.key().to_short();
         let counter = self.inner.counter();
-        let mut data = Vec::new();
-        data.extend_from_slice(&counter.to_be_bytes());
-        data.extend_from_slice(&key_bytes);
-        base64::engine::general_purpose::STANDARD.encode(&data)
+        let key_b64 = base64::engine::general_purpose::STANDARD.encode(&key_bytes);
+        format!("{}V{}", counter, key_b64)
     }
 
     /// Get the unique identifier (public key hash)

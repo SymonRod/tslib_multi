@@ -9,6 +9,7 @@ members = [
     "crates/tslib-bot",
     "examples/simple-bot",
     "examples/voice-client",
+    "examples/test-suite",
 ]
 
 [workspace.package]

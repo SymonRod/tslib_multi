@@ -91,6 +91,11 @@ impl Client {
             .name(self.config.nickname.clone())
             .identity(self.config.identity.to_ts_identity());
 
+        // Add password if specified
+        if let Some(ref password) = self.config.password {
+            options = options.password(password.clone());
+        }
+
         // Add channel if specified
         if let Some(ref channel) = self.config.channel {
             options = options.channel(channel.clone());
