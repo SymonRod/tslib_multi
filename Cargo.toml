@@ -6,6 +6,7 @@ members = [
     "crates/tslib-chat",
     "crates/tslib-channel",
     "crates/tslib-ffi",
+    "crates/tslib-python",
     "crates/tslib-bot",
     "examples/simple-bot",
     "examples/voice-client",

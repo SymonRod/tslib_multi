@@ -12,6 +12,7 @@ Une bibliothèque modulaire et cross-platform pour créer des clients TeamSpeak 
 | `tslib-channel` | Gestion des canaux, arborescence |
 | `tslib-bot` | Framework pour créer des bots avec commandes |
 | `tslib-ffi` | Bindings C pour intégration Python/Java/Go |
+| `tslib-python` | Bindings Python natifs via PyO3 |
 
 ## 🚀 Démarrage rapide
 
@@ -180,6 +181,38 @@ client = lib.tslib_client_connect(
 # ...
 ```
 
+## 🐍 Bindings Python (PyO3)
+
+Bindings Python natifs — pas de ctypes, API Pythonique complète.
+
+### Installation
+
+```bash
+# Dans un virtualenv
+pip install maturin
+maturin develop -m crates/tslib-python/Cargo.toml
+```
+
+### Exemple
+
+```python
+import tslib
+
+identity = tslib.Identity()
+print(f"UID: {identity.unique_id}")
+
+client = tslib.Client("localhost:9987", identity, "PyBot", password="secret")
+client.wait_connected()
+
+for user in client.users():
+    print(f"  {user.nickname} (channel {user.channel_id})")
+
+client.send_server_message("Hello from Python!")
+
+html = tslib.bbcode_to_html("[b]Hello[/b]")
+client.disconnect()
+```
+
 ## 📋 Fonctionnalités
 
 ### Implémentées
@@ -199,7 +232,7 @@ client = lib.tslib_client_connect(
 
 ### En cours
 
-- [ ] Bindings Python (PyO3)
+- [x] Bindings Python (PyO3)
 - [ ] Bindings Java (JNI)
 
 ## 🏗️ Architecture
@@ -212,7 +245,8 @@ tslib/
 │   ├── tslib-chat/       # Chat : messages, BBCode
 │   ├── tslib-channel/    # Canaux : arborescence, gestion
 │   ├── tslib-bot/        # Bot : commandes, plugins
-│   └── tslib-ffi/        # FFI : bindings C
+│   ├── tslib-ffi/        # FFI : bindings C
+│   └── tslib-python/     # Bindings Python (PyO3)
 ├── examples/
 │   ├── simple-bot/       # Exemple de bot
 │   ├── voice-client/     # Exemple de client voix
