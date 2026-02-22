@@ -12,6 +12,7 @@ pub struct AudioMixer {
     /// Buffer capacity per user
     buffer_capacity: usize,
     /// Sample rate
+    #[allow(dead_code)]
     sample_rate: u32,
 }
 

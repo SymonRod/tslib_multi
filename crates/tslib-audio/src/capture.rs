@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 /// Audio capture device
 pub struct CaptureDevice {

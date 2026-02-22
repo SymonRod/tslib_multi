@@ -1,7 +1,6 @@
 //! BBCode parsing and rendering
 
 use regex::Regex;
-use std::sync::LazyLock;
 
 /// BBCode parser
 pub struct BBCodeParser;

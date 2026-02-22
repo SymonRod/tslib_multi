@@ -54,6 +54,7 @@ pub struct Connection {
 
 /// Internal commands for connection management
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum ConnectionCommand {
     /// Send a command to the server
     SendCommand(String),
@@ -76,6 +77,7 @@ pub enum MessageTarget {
     Private(u16),
 }
 
+#[allow(dead_code)]
 impl Connection {
     /// Create a new connection (internal use)
     pub(crate) fn new(

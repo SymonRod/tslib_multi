@@ -128,7 +128,6 @@ impl Client {
         let mut events = Vec::new();
         let mut stream_items = Vec::new();
         let mut disconnected = false;
-        let mut error_occurred = false;
 
         // First, collect all pending stream items
         {
@@ -147,7 +146,6 @@ impl Client {
                     }
                     Ok(Some(Err(e))) => {
                         warn!("Event stream error: {}", e);
-                        error_occurred = true;
                         break;
                     }
                     Ok(None) => {

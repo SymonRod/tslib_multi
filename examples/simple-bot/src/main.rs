@@ -10,7 +10,7 @@ use clap::Parser;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use tslib_bot::{Bot, BotConfig, Command, CommandContext};
+use tslib_bot::{Bot, BotConfig};
 use tslib_core::Identity;
 
 /// Simple TeamSpeak Bot

@@ -209,6 +209,7 @@ impl ClientConfig {
 }
 
 // Helper module for Duration serialization
+#[allow(dead_code)]
 mod humantime_serde {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::time::Duration;
@@ -231,11 +232,6 @@ mod humantime_serde {
             .map_err(serde::de::Error::custom)?;
         Ok(Duration::from_secs(secs))
     }
-}
-
-// Add hex dependency for hardware ID
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 mod hex {

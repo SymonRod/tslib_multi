@@ -2,7 +2,6 @@
 
 use crate::error::{BotError, Result};
 use tslib_core::identity::Identity;
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Bot configuration builder

@@ -152,6 +152,7 @@ impl Encoder for OpusEncoder {
 pub struct OpusDecoder {
     inner: opus::Decoder,
     channels: u16,
+    #[allow(dead_code)]
     frame_size: usize,
 }
 

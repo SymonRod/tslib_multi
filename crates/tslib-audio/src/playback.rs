@@ -121,7 +121,7 @@ impl PlaybackDevice {
 
         let mixer = self.mixer.clone();
         let state = self.state.clone();
-        let channels = self.config.channels as usize;
+        let _channels = self.config.channels as usize;
 
         // Build the output stream
         let stream = device
@@ -231,6 +231,7 @@ impl PlaybackDevice {
 /// Audio buffer for a single user
 pub struct UserAudioBuffer {
     /// User ID
+    #[allow(dead_code)]
     user_id: u16,
     /// Ring buffer of samples
     buffer: Vec<i16>,

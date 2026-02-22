@@ -2,7 +2,6 @@
 
 use crate::tree::ChannelTree;
 use tslib_core::state::Channel;
-use tslib_core::error::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
