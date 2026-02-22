@@ -1,289 +1,474 @@
-//! Main client implementation
+//! Main client implementation using tsclientlib
+//!
+//! The client wraps tsclientlib's Connection and provides a higher-level API.
+//! Note: The client is not Send/Sync due to tsclientlib limitations.
 
 use crate::config::ClientConfig;
-use crate::connection::{Connection, ConnectionCommand, ConnectionState, MessageTarget};
+use crate::connection::ConnectionState;
 use crate::error::{ConnectionError, Error, Result};
-use crate::events::{Event, EventHandler};
+use crate::events::{AudioCodec, Event, EventHandler};
 use crate::state::{Channel, ServerState, User};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tokio::sync::broadcast;
+use tracing::{debug, info, warn};
+
+use futures::{StreamExt, TryStreamExt};
+use tsclientlib::{Connection as TsConnection, DisconnectOptions, Reason, StreamItem};
+use tsproto_packets::packets::{AudioData, CodecType, OutAudio};
 
 /// The main TeamSpeak client
+///
+/// This client wraps tsclientlib's Connection. Due to tsclientlib's design,
+/// the client is not Send/Sync and must be used from a single task.
+///
+/// Use `process_events()` to poll for and handle server events.
 pub struct Client {
-    /// The connection to the server
-    connection: Arc<Connection>,
+    /// The tsclientlib connection
+    connection: Option<TsConnection>,
     /// Configuration
     config: ClientConfig,
+    /// Current connection state
+    state: ConnectionState,
+    /// Server state (channels, users, etc.)
+    server_state: ServerState,
+    /// Event broadcaster
+    event_tx: broadcast::Sender<Event>,
     /// Event handlers
-    handlers: Arc<RwLock<Vec<Arc<dyn EventHandler>>>>,
-    /// Shutdown signal
-    shutdown_tx: mpsc::Sender<()>,
+    handlers: Vec<Arc<dyn EventHandler>>,
+    /// Our client ID on the server
+    client_id: Option<u16>,
+    /// Current channel ID
+    channel_id: Option<u64>,
+    /// Audio packet sequence number
+    audio_sequence: u16,
 }
 
 impl Client {
     /// Connect to a TeamSpeak server
-    pub async fn connect(config: ClientConfig) -> Result<Self> {
+    pub fn connect(config: ClientConfig) -> Result<Self> {
         info!("Connecting to {}", config.address);
 
-        // Create channels
+        // Create event broadcaster
         let (event_tx, _) = broadcast::channel(256);
-        let (command_tx, command_rx) = mpsc::channel(64);
-        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
-        // Create connection
-        let connection = Arc::new(Connection::new(
-            config.clone(),
-            event_tx.clone(),
-            command_tx.clone(),
-        ));
-
-        let client = Self {
-            connection: connection.clone(),
-            config,
-            handlers: Arc::new(RwLock::new(Vec::new())),
-            shutdown_tx,
+        let mut client = Self {
+            connection: None,
+            config: config.clone(),
+            state: ConnectionState::Disconnected,
+            server_state: ServerState::default(),
+            event_tx,
+            handlers: Vec::new(),
+            client_id: None,
+            channel_id: None,
+            audio_sequence: 0,
         };
 
-        // Start connection task
-        client.spawn_connection_task(command_rx, shutdown_rx);
-
-        // Wait for connection to establish
-        client.wait_for_connection().await?;
+        // Establish connection
+        client.do_connect()?;
 
         Ok(client)
     }
 
-    /// Add an event handler
-    pub async fn add_handler(&self, handler: Arc<dyn EventHandler>) {
-        self.handlers.write().await.push(handler);
-    }
+    /// Perform the actual connection to the server
+    fn do_connect(&mut self) -> Result<()> {
+        self.state = ConnectionState::Connecting;
 
-    /// Get the current connection state
-    pub async fn state(&self) -> ConnectionState {
-        self.connection.state().await
-    }
+        // Build connection options using the new API
+        let mut options = TsConnection::build(self.config.address.clone())
+            .name(self.config.nickname.clone())
+            .identity(self.config.identity.to_ts_identity());
 
-    /// Check if connected
-    pub async fn is_connected(&self) -> bool {
-        self.connection.state().await.is_connected()
-    }
+        // Add channel if specified
+        if let Some(ref channel) = self.config.channel {
+            options = options.channel(channel.clone());
+        }
 
-    /// Get our client ID
-    pub async fn client_id(&self) -> Option<u16> {
-        self.connection.client_id().await
-    }
+        // Connect
+        let con = options
+            .connect()
+            .map_err(|e| ConnectionError::ConnectFailed(e.to_string()))?;
 
-    /// Get our current channel ID
-    pub async fn channel_id(&self) -> Option<u64> {
-        self.connection.channel_id().await
-    }
+        self.connection = Some(con);
+        self.state = ConnectionState::Connected;
 
-    /// Get a snapshot of the server state
-    pub async fn server_state(&self) -> ServerState {
-        self.connection.server_state().read().await.clone()
-    }
+        info!("Connected to {}", self.config.address);
 
-    /// Get all channels
-    pub async fn channels(&self) -> Vec<Channel> {
-        self.connection
-            .server_state()
-            .read()
-            .await
-            .channels
-            .values()
-            .cloned()
-            .collect()
-    }
+        // Emit connected event
+        let _ = self.event_tx.send(Event::Connected {
+            server_name: String::new(), // Will be updated from server data
+            welcome_message: None,
+        });
 
-    /// Get all users
-    pub async fn users(&self) -> Vec<User> {
-        self.connection
-            .server_state()
-            .read()
-            .await
-            .users
-            .values()
-            .cloned()
-            .collect()
-    }
-
-    /// Get a specific channel
-    pub async fn channel(&self, id: u64) -> Option<Channel> {
-        self.connection
-            .server_state()
-            .read()
-            .await
-            .channels
-            .get(&id)
-            .cloned()
-    }
-
-    /// Get a specific user
-    pub async fn user(&self, id: u16) -> Option<User> {
-        self.connection
-            .server_state()
-            .read()
-            .await
-            .users
-            .get(&id)
-            .cloned()
-    }
-
-    /// Move to a channel
-    pub async fn move_to_channel(&self, channel_id: u64) -> Result<()> {
-        self.connection.move_to_channel(channel_id, None).await
-    }
-
-    /// Move to a channel with password
-    pub async fn move_to_channel_with_password(
-        &self,
-        channel_id: u64,
-        password: impl Into<String>,
-    ) -> Result<()> {
-        self.connection
-            .move_to_channel(channel_id, Some(password.into()))
-            .await
-    }
-
-    /// Send a message to the server
-    pub async fn send_server_message(&self, message: impl Into<String>) -> Result<()> {
-        self.connection
-            .send_message(MessageTarget::Server, message)
-            .await
-    }
-
-    /// Send a message to the current channel
-    pub async fn send_channel_message(&self, message: impl Into<String>) -> Result<()> {
-        self.connection
-            .send_message(MessageTarget::Channel, message)
-            .await
-    }
-
-    /// Send a private message to a user
-    pub async fn send_private_message(
-        &self,
-        user_id: u16,
-        message: impl Into<String>,
-    ) -> Result<()> {
-        self.connection
-            .send_message(MessageTarget::Private(user_id), message)
-            .await
-    }
-
-    /// Subscribe to events
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.connection.subscribe()
-    }
-
-    /// Disconnect from the server
-    pub async fn disconnect(&self) -> Result<()> {
-        self.disconnect_with_reason("Goodbye").await
-    }
-
-    /// Disconnect from the server with a reason
-    pub async fn disconnect_with_reason(&self, reason: impl Into<String>) -> Result<()> {
-        info!("Disconnecting from server");
-        self.connection.disconnect(Some(reason.into())).await?;
-        let _ = self.shutdown_tx.send(()).await;
         Ok(())
     }
 
-    /// Wait until the connection is established
-    async fn wait_for_connection(&self) -> Result<()> {
-        let timeout = self.config.connect_timeout;
-        let start = std::time::Instant::now();
+    /// Process pending events from the server
+    ///
+    /// This method must be called regularly to receive server events.
+    /// Returns a vector of events that occurred.
+    pub async fn process_events(&mut self) -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+        let mut stream_items = Vec::new();
+        let mut disconnected = false;
+        let mut error_occurred = false;
 
-        // Set state to connecting
-        self.connection.set_state(ConnectionState::Connecting).await;
+        // First, collect all pending stream items
+        {
+            let con = self
+                .connection
+                .as_mut()
+                .ok_or(ConnectionError::NotConnected)?;
 
-        // TODO: Actually connect using tsclientlib
-        // For now, simulate a successful connection
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Simulate successful connection
-        self.connection.set_state(ConnectionState::Connected).await;
-        self.connection.set_client_id(1).await;
-        self.connection.set_channel_id(1).await;
-
-        info!("Connected successfully");
-        Ok(())
-    }
-
-    /// Spawn the background connection task
-    fn spawn_connection_task(
-        &self,
-        mut command_rx: mpsc::Receiver<ConnectionCommand>,
-        mut shutdown_rx: mpsc::Receiver<()>,
-    ) {
-        let connection = self.connection.clone();
-        let handlers = self.handlers.clone();
-
-        tokio::spawn(async move {
-            let mut event_rx = connection.subscribe();
+            // Process events with a short timeout
+            let timeout = tokio::time::Duration::from_millis(10);
 
             loop {
-                tokio::select! {
-                    // Handle commands
-                    Some(cmd) = command_rx.recv() => {
-                        Self::handle_command(&connection, cmd).await;
+                match tokio::time::timeout(timeout, con.events().next()).await {
+                    Ok(Some(Ok(item))) => {
+                        stream_items.push(item);
                     }
-
-                    // Handle events
-                    Ok(event) = event_rx.recv() => {
-                        Self::dispatch_event(&handlers, event).await;
+                    Ok(Some(Err(e))) => {
+                        warn!("Event stream error: {}", e);
+                        error_occurred = true;
+                        break;
                     }
-
-                    // Handle shutdown
-                    Some(_) = shutdown_rx.recv() => {
-                        debug!("Shutdown signal received");
+                    Ok(None) => {
+                        // Stream ended, connection closed
+                        disconnected = true;
+                        break;
+                    }
+                    Err(_) => {
+                        // Timeout, no more events for now
                         break;
                     }
                 }
             }
+        }
 
-            debug!("Connection task ended");
-        });
+        // Now process the collected items
+        for item in stream_items {
+            if let Some(event) = self.process_stream_item(item).await {
+                events.push(event);
+            }
+        }
+
+        if disconnected {
+            self.state = ConnectionState::Disconnected;
+            let event = Event::Disconnected {
+                reason: "Connection closed".to_string(),
+            };
+            let _ = self.event_tx.send(event.clone());
+            events.push(event);
+        }
+
+        // Dispatch events to handlers
+        for event in &events {
+            self.dispatch_event(event.clone()).await;
+        }
+
+        Ok(events)
     }
 
-    /// Handle a connection command
-    async fn handle_command(connection: &Connection, cmd: ConnectionCommand) {
-        match cmd {
-            ConnectionCommand::Disconnect(reason) => {
-                debug!("Processing disconnect command: {:?}", reason);
-                connection.set_state(ConnectionState::Disconnected).await;
+    /// Wait for the initial connection to be established
+    ///
+    /// This waits until we receive the first BookEvents, indicating
+    /// the connection is fully established.
+    pub async fn wait_connected(&mut self) -> Result<()> {
+        use futures::future;
+
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        let result: Option<std::result::Result<StreamItem, tsclientlib::Error>> = con
+            .events()
+            .try_filter(|e| future::ready(matches!(e, StreamItem::BookEvents(_))))
+            .next()
+            .await;
+
+        match result {
+            Some(Ok(_)) => {
+                // Update server info if available
+                if let Ok(state) = con.get_state() {
+                    let _ = self.event_tx.send(Event::Connected {
+                        server_name: state.server.name.clone(),
+                        welcome_message: Some(state.server.welcome_message.clone()),
+                    });
+                }
+                Ok(())
             }
-            ConnectionCommand::MoveToChannel { channel_id, password } => {
-                debug!("Moving to channel {}", channel_id);
-                // TODO: Send move command via tsclientlib
-                connection.set_channel_id(channel_id).await;
+            Some(Err(e)) => Err(ConnectionError::ConnectFailed(e.to_string()).into()),
+            None => Err(ConnectionError::ConnectFailed("Connection closed".to_string()).into()),
+        }
+    }
+
+    /// Process a stream item from tsclientlib
+    async fn process_stream_item(&mut self, item: StreamItem) -> Option<Event> {
+        match item {
+            StreamItem::BookEvents(book_events) => {
+                // Process book events (client/channel changes)
+                for event in book_events {
+                    self.process_book_event(event);
+                }
+                None
             }
-            ConnectionCommand::SendMessage { target, message } => {
-                debug!("Sending message to {:?}: {}", target, message);
-                // TODO: Send message via tsclientlib
+            StreamItem::Audio(audio) => {
+                // Audio received - extract data from InAudioBuf
+                let audio_data = audio.data().data();
+                let (from_id, codec, data) = match audio_data {
+                    AudioData::S2C { from, codec, data, .. } => (*from, *codec, data),
+                    AudioData::S2CWhisper { from, codec, data, .. } => (*from, *codec, data),
+                    _ => return None, // C2S packets should not be received
+                };
+
+                let event = Event::AudioReceived {
+                    user_id: from_id,
+                    codec: codec_type_to_audio_codec(codec),
+                    data: data.to_vec(),
+                };
+                let _ = self.event_tx.send(event.clone());
+                Some(event)
             }
-            ConnectionCommand::SendCommand(cmd) => {
-                debug!("Sending raw command: {}", cmd);
-                // TODO: Send raw command via tsclientlib
+            StreamItem::DisconnectedTemporarily(_reason) => {
+                self.state = ConnectionState::Reconnecting;
+                let event = Event::ConnectionLost {
+                    reason: "Temporary disconnect".to_string(),
+                };
+                let _ = self.event_tx.send(event.clone());
+                Some(event)
             }
+            StreamItem::MessageEvent(msg) => {
+                debug!("Message event: {:?}", msg);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Process a book event
+    fn process_book_event(&mut self, event: tsclientlib::events::Event) {
+        use tsclientlib::events::Event as TsEvent;
+
+        match event {
+            TsEvent::PropertyAdded { id, .. } | TsEvent::PropertyChanged { id, .. } => {
+                debug!("Property changed: {:?}", id);
+            }
+            TsEvent::PropertyRemoved { id, .. } => {
+                debug!("Property removed: {:?}", id);
+            }
+            _ => {}
         }
     }
 
     /// Dispatch an event to all handlers
-    async fn dispatch_event(
-        handlers: &Arc<RwLock<Vec<Arc<dyn EventHandler>>>>,
-        event: Event,
-    ) {
-        let handlers = handlers.read().await;
-        for handler in handlers.iter() {
+    async fn dispatch_event(&self, event: Event) {
+        for handler in &self.handlers {
             handler.on_event(&event).await;
         }
     }
+
+    /// Add an event handler
+    pub fn add_handler(&mut self, handler: Arc<dyn EventHandler>) {
+        self.handlers.push(handler);
+    }
+
+    /// Get the current connection state
+    pub fn state(&self) -> ConnectionState {
+        self.state.clone()
+    }
+
+    /// Check if connected
+    pub fn is_connected(&self) -> bool {
+        self.state.is_connected()
+    }
+
+    /// Get our client ID
+    pub fn client_id(&self) -> Option<u16> {
+        self.client_id
+    }
+
+    /// Get our current channel ID
+    pub fn channel_id(&self) -> Option<u64> {
+        self.channel_id
+    }
+
+    /// Get a snapshot of the server state
+    pub fn server_state(&self) -> &ServerState {
+        &self.server_state
+    }
+
+    /// Get all channels from tsclientlib state
+    pub fn channels(&self) -> Vec<Channel> {
+        self.server_state.channels.values().cloned().collect()
+    }
+
+    /// Get all users from tsclientlib state
+    pub fn users(&self) -> Vec<User> {
+        self.server_state.users.values().cloned().collect()
+    }
+
+    /// Get a specific channel
+    pub fn channel(&self, id: u64) -> Option<Channel> {
+        self.server_state.channels.get(&id).cloned()
+    }
+
+    /// Get a specific user
+    pub fn user(&self, id: u16) -> Option<User> {
+        self.server_state.users.get(&id).cloned()
+    }
+
+    /// Move to a channel
+    pub fn move_to_channel(&mut self, channel_id: u64) -> Result<()> {
+        self.move_to_channel_with_password(channel_id, None)
+    }
+
+    /// Move to a channel with password
+    pub fn move_to_channel_with_password(
+        &mut self,
+        channel_id: u64,
+        _password: Option<String>,
+    ) -> Result<()> {
+        let _con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        // TODO: Use proper tsclientlib command to move to channel
+        // This requires using the book API to send commands
+
+        self.channel_id = Some(channel_id);
+        Ok(())
+    }
+
+    /// Send a message to the server
+    pub fn send_server_message(&mut self, message: impl Into<String>) -> Result<()> {
+        let msg = message.into();
+        let _con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        // TODO: Send message via tsclientlib using the command API
+        debug!("Sending server message: {}", msg);
+        Ok(())
+    }
+
+    /// Send a message to the current channel
+    pub fn send_channel_message(&mut self, message: impl Into<String>) -> Result<()> {
+        let msg = message.into();
+        let _con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        // TODO: Send channel message via tsclientlib
+        debug!("Sending channel message: {}", msg);
+        Ok(())
+    }
+
+    /// Send a private message to a user
+    pub fn send_private_message(&mut self, user_id: u16, message: impl Into<String>) -> Result<()> {
+        let msg = message.into();
+        let _con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        // TODO: Send private message via tsclientlib
+        debug!("Sending private message to {}: {}", user_id, msg);
+        Ok(())
+    }
+
+    /// Send audio data
+    pub fn send_audio(&mut self, data: &[u8], codec: AudioCodec) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        if !con.can_send_audio() {
+            return Err(Error::Internal("Cannot send audio".to_string()));
+        }
+
+        // Create audio packet using C2S format
+        let audio_data = AudioData::C2S {
+            id: self.audio_sequence,
+            codec: audio_codec_to_codec_type(codec),
+            data,
+        };
+        self.audio_sequence = self.audio_sequence.wrapping_add(1);
+
+        let packet = OutAudio::new(&audio_data);
+        con.send_audio(packet)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Subscribe to events
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.event_tx.subscribe()
+    }
+
+    /// Disconnect from the server
+    pub fn disconnect(&mut self) -> Result<()> {
+        self.disconnect_with_reason("Goodbye")
+    }
+
+    /// Disconnect from the server with a reason
+    pub fn disconnect_with_reason(&mut self, reason: impl Into<String>) -> Result<()> {
+        info!("Disconnecting from server");
+
+        if let Some(mut con) = self.connection.take() {
+            let options = DisconnectOptions::new()
+                .reason(Reason::Clientdisconnect)
+                .message(reason.into());
+
+            con.disconnect(options)
+                .map_err(|e| ConnectionError::ConnectionLost(e.to_string()))?;
+        }
+
+        self.state = ConnectionState::Disconnected;
+
+        let _ = self.event_tx.send(Event::Disconnected {
+            reason: "User requested".to_string(),
+        });
+
+        Ok(())
+    }
+
+    /// Get access to the underlying tsclientlib connection
+    pub fn inner(&self) -> Option<&TsConnection> {
+        self.connection.as_ref()
+    }
+
+    /// Get mutable access to the underlying tsclientlib connection
+    pub fn inner_mut(&mut self) -> Option<&mut TsConnection> {
+        self.connection.as_mut()
+    }
 }
 
-impl Drop for Client {
-    fn drop(&mut self) {
-        // Trigger shutdown
-        let _ = self.shutdown_tx.try_send(());
+/// Convert tsclientlib CodecType to our AudioCodec
+fn codec_type_to_audio_codec(codec: CodecType) -> AudioCodec {
+    match codec {
+        CodecType::SpeexNarrowband => AudioCodec::SpeexNarrowband,
+        CodecType::SpeexWideband => AudioCodec::SpeexWideband,
+        CodecType::SpeexUltrawideband => AudioCodec::SpeexUltraWideband,
+        CodecType::CeltMono => AudioCodec::CeltMono,
+        CodecType::OpusVoice => AudioCodec::OpusVoice,
+        CodecType::OpusMusic => AudioCodec::OpusMusic,
+    }
+}
+
+/// Convert our AudioCodec to tsclientlib CodecType
+fn audio_codec_to_codec_type(codec: AudioCodec) -> CodecType {
+    match codec {
+        AudioCodec::SpeexNarrowband => CodecType::SpeexNarrowband,
+        AudioCodec::SpeexWideband => CodecType::SpeexWideband,
+        AudioCodec::SpeexUltraWideband => CodecType::SpeexUltrawideband,
+        AudioCodec::CeltMono => CodecType::CeltMono,
+        AudioCodec::OpusVoice => CodecType::OpusVoice,
+        AudioCodec::OpusMusic => CodecType::OpusMusic,
     }
 }

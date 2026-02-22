@@ -10,27 +10,16 @@
 //! - Pointers are valid and properly aligned
 //! - Strings are null-terminated UTF-8
 //! - Returned pointers are freed using the appropriate free functions
+//!
+//! ## Thread Safety
+//!
+//! The client is NOT thread-safe. All calls to a client must be made from
+//! the same thread that created it.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::Arc;
-
-use once_cell::sync::OnceCell;
-use tokio::runtime::Runtime;
 
 use tslib_core::{Client, ClientConfig, Identity};
-
-// Global runtime for async operations
-static RUNTIME: OnceCell<Runtime> = OnceCell::new();
-
-fn runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create Tokio runtime")
-    })
-}
 
 /// Error codes
 #[repr(C)]
@@ -203,6 +192,7 @@ pub unsafe extern "C" fn tslib_identity_free(identity: *mut TsLibIdentity) {
 /// - All string parameters must be valid null-terminated UTF-8 strings
 /// - `identity` must be a valid pointer (ownership is NOT transferred)
 /// - Returns a pointer that must be freed with `tslib_client_free`
+/// - The client is NOT thread-safe - all operations must happen on the same thread
 #[no_mangle]
 pub unsafe extern "C" fn tslib_client_connect(
     address: *const c_char,
@@ -248,26 +238,26 @@ pub unsafe extern "C" fn tslib_client_connect(
         Err(_) => return ptr::null_mut(),
     };
 
-    let result = runtime().block_on(async { Client::connect(config).await });
-
-    match result {
+    // Client::connect is synchronous now
+    match Client::connect(config) {
         Ok(client) => Box::into_raw(Box::new(client)) as *mut TsLibClient,
         Err(_) => ptr::null_mut(),
     }
 }
 
 /// Disconnect from the server
+///
+/// # Safety
+/// - `client` must be a valid mutable pointer
 #[no_mangle]
 pub unsafe extern "C" fn tslib_client_disconnect(client: *mut TsLibClient) -> TsLibError {
     if client.is_null() {
         return TsLibError::InvalidArgument;
     }
 
-    let client = &*(client as *const Client);
+    let client = &mut *(client as *mut Client);
 
-    let result = runtime().block_on(async { client.disconnect().await });
-
-    match result {
+    match client.disconnect() {
         Ok(()) => TsLibError::Ok,
         Err(_) => TsLibError::InternalError,
     }
@@ -281,8 +271,7 @@ pub unsafe extern "C" fn tslib_client_state(client: *const TsLibClient) -> TsLib
     }
 
     let client = &*(client as *const Client);
-
-    let state = runtime().block_on(async { client.state().await });
+    let state = client.state();
 
     match state {
         tslib_core::ConnectionState::Disconnected => TsLibConnectionState::Disconnected,
@@ -294,33 +283,39 @@ pub unsafe extern "C" fn tslib_client_state(client: *const TsLibClient) -> TsLib
 }
 
 /// Send a message to the server
+///
+/// # Safety
+/// - `client` must be a valid mutable pointer
+/// - `message` must be a valid null-terminated UTF-8 string
 #[no_mangle]
 pub unsafe extern "C" fn tslib_client_send_server_message(
-    client: *const TsLibClient,
+    client: *mut TsLibClient,
     message: *const c_char,
 ) -> TsLibError {
     if client.is_null() || message.is_null() {
         return TsLibError::InvalidArgument;
     }
 
-    let client = &*(client as *const Client);
+    let client = &mut *(client as *mut Client);
     let message = match CStr::from_ptr(message).to_str() {
         Ok(s) => s,
         Err(_) => return TsLibError::InvalidArgument,
     };
 
-    let result = runtime().block_on(async { client.send_server_message(message).await });
-
-    match result {
+    match client.send_server_message(message) {
         Ok(()) => TsLibError::Ok,
         Err(_) => TsLibError::InternalError,
     }
 }
 
 /// Send a private message to a user
+///
+/// # Safety
+/// - `client` must be a valid mutable pointer
+/// - `message` must be a valid null-terminated UTF-8 string
 #[no_mangle]
 pub unsafe extern "C" fn tslib_client_send_private_message(
-    client: *const TsLibClient,
+    client: *mut TsLibClient,
     user_id: u16,
     message: *const c_char,
 ) -> TsLibError {
@@ -328,37 +323,34 @@ pub unsafe extern "C" fn tslib_client_send_private_message(
         return TsLibError::InvalidArgument;
     }
 
-    let client = &*(client as *const Client);
+    let client = &mut *(client as *mut Client);
     let message = match CStr::from_ptr(message).to_str() {
         Ok(s) => s,
         Err(_) => return TsLibError::InvalidArgument,
     };
 
-    let result = runtime().block_on(async {
-        client.send_private_message(user_id, message).await
-    });
-
-    match result {
+    match client.send_private_message(user_id, message) {
         Ok(()) => TsLibError::Ok,
         Err(_) => TsLibError::InternalError,
     }
 }
 
 /// Move to a channel
+///
+/// # Safety
+/// - `client` must be a valid mutable pointer
 #[no_mangle]
 pub unsafe extern "C" fn tslib_client_move_to_channel(
-    client: *const TsLibClient,
+    client: *mut TsLibClient,
     channel_id: u64,
 ) -> TsLibError {
     if client.is_null() {
         return TsLibError::InvalidArgument;
     }
 
-    let client = &*(client as *const Client);
+    let client = &mut *(client as *mut Client);
 
-    let result = runtime().block_on(async { client.move_to_channel(channel_id).await });
-
-    match result {
+    match client.move_to_channel(channel_id) {
         Ok(()) => TsLibError::Ok,
         Err(_) => TsLibError::ChannelError,
     }
@@ -394,9 +386,6 @@ pub extern "C" fn tslib_version() -> *const c_char {
 /// Initialize the library (call once at startup)
 #[no_mangle]
 pub extern "C" fn tslib_init() -> TsLibError {
-    // Initialize runtime
-    let _ = runtime();
-
     // Initialize tracing
     tracing_subscriber::fmt::try_init().ok();
 
@@ -406,5 +395,5 @@ pub extern "C" fn tslib_init() -> TsLibError {
 /// Shutdown the library (call once at exit)
 #[no_mangle]
 pub extern "C" fn tslib_shutdown() {
-    // Runtime will be dropped when program exits
+    // Nothing to do for now
 }

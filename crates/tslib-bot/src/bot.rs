@@ -53,7 +53,7 @@ impl Bot {
             .build()
             .map_err(|e| BotError::Core(e))?;
 
-        let client = Client::connect(core_config).await?;
+        let client = Client::connect(core_config)?;
         self.client = Some(client);
 
         info!("Bot connected to {}", self.config.address);
@@ -62,10 +62,9 @@ impl Bot {
 
     /// Disconnect from the server
     pub async fn disconnect(&mut self) -> Result<()> {
-        if let Some(client) = &self.client {
-            client.disconnect().await?;
+        if let Some(mut client) = self.client.take() {
+            client.disconnect()?;
         }
-        self.client = None;
         Ok(())
     }
 

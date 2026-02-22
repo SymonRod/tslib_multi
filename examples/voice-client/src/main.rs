@@ -75,7 +75,14 @@ async fn main() -> Result<()> {
     audio_config.vad_enabled = !args.ptt;
     audio_config.vad_threshold = args.vad_threshold;
 
-    info!("Audio mode: {}", if args.ptt { "Push-to-talk" } else { "Voice activity" });
+    info!(
+        "Audio mode: {}",
+        if args.ptt {
+            "Push-to-talk"
+        } else {
+            "Voice activity"
+        }
+    );
 
     // Create audio manager
     let audio_manager = AudioManager::new(audio_config)?;
@@ -96,9 +103,13 @@ async fn main() -> Result<()> {
 
     let config = config_builder.build()?;
 
-    // Connect to server
+    // Connect to server (synchronous)
     info!("Connecting to {}...", args.server);
-    let client = Client::connect(config).await?;
+    let mut client = Client::connect(config)?;
+
+    // Wait for connection to be established
+    info!("Waiting for connection...");
+    client.wait_connected().await?;
 
     info!("Connected!");
 
@@ -118,63 +129,68 @@ async fn main() -> Result<()> {
     info!("  - Ctrl+C to disconnect");
 
     // Main event loop
-    loop {
-        tokio::select! {
-            // Handle events from server
-            event = events.recv() => {
+    let mut running = true;
+    while running {
+        // Process client events
+        if let Ok(client_events) = client.process_events().await {
+            for event in client_events {
                 match event {
-                    Ok(Event::TextMessage { sender_name, message, .. }) => {
+                    Event::TextMessage {
+                        sender_name,
+                        message,
+                        ..
+                    } => {
                         info!("[Chat] {}: {}", sender_name, message);
                     }
-                    Ok(Event::UserJoined { user }) => {
+                    Event::UserJoined { user } => {
                         info!("[Join] {} joined the server", user.nickname);
                     }
-                    Ok(Event::UserLeft { user, reason }) => {
+                    Event::UserLeft { user, reason } => {
                         info!("[Leave] {} left: {}", user.nickname, reason);
                     }
-                    Ok(Event::TalkStatusStart { user_id }) => {
+                    Event::TalkStatusStart { user_id } => {
                         info!("[Talk] User {} started talking", user_id);
                     }
-                    Ok(Event::TalkStatusStop { user_id }) => {
+                    Event::TalkStatusStop { user_id } => {
                         info!("[Talk] User {} stopped talking", user_id);
                     }
-                    Ok(Event::AudioReceived { user_id, data, .. }) => {
+                    Event::AudioReceived { user_id, data, .. } => {
                         // Process incoming audio
                         if let Err(e) = audio_manager.process_incoming(user_id, &data, 4).await {
                             warn!("Audio processing error: {}", e);
                         }
                     }
-                    Ok(Event::Disconnected { reason }) => {
+                    Event::Disconnected { reason } => {
                         info!("Disconnected: {}", reason);
-                        break;
+                        running = false;
                     }
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!("Event error: {}", e);
-                    }
+                    _ => {}
                 }
             }
+        }
 
-            // Handle captured audio
-            Some(packet) = audio_rx.recv() => {
-                if packet.voice_activity {
-                    // TODO: Send audio packet to server
-                    // client.send_audio(packet).await?;
-                }
+        // Handle captured audio (non-blocking check)
+        while let Ok(packet) = audio_rx.try_recv() {
+            if packet.voice_activity {
+                // TODO: Send audio packet to server
+                // client.send_audio(&packet.data, AudioCodec::OpusVoice)?;
             }
+        }
 
-            // Handle Ctrl+C
+        // Check for Ctrl+C
+        tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("Shutting down...");
-                break;
+                running = false;
             }
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {}
         }
     }
 
     // Cleanup
     audio_manager.stop_capture().await?;
     audio_manager.stop_playback().await?;
-    client.disconnect().await?;
+    client.disconnect()?;
 
     info!("Goodbye!");
     Ok(())

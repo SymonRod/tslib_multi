@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::identity::Identity;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::time::Duration;
 
 /// Client configuration builder
