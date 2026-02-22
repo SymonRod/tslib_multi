@@ -25,10 +25,10 @@
 //!         .nickname("TsLibBot")
 //!         .build()?;
 //!
-//!     let client = Client::connect(config).await?;
+//!     let mut client = Client::connect(config)?;
 //!
 //!     // Handle events...
-//!     client.disconnect().await?;
+//!     client.disconnect()?;
 //!     Ok(())
 //! }
 //! ```

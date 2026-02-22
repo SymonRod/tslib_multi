@@ -14,13 +14,13 @@
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let config = AudioConfig::default();
-//! let mut audio = AudioManager::new(config)?;
+//! let audio = AudioManager::new(config)?;
 //!
-//! // Start capture
-//! audio.start_capture()?;
+//! // Start capture — returns a receiver for encoded packets
+//! let mut rx = audio.start_capture().await?;
 //!
 //! // Get encoded audio for transmission
-//! while let Some(packet) = audio.get_encoded_packet().await {
+//! while let Some(packet) = rx.recv().await {
 //!     // Send packet to server...
 //! }
 //! # Ok(())
