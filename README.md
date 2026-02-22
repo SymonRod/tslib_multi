@@ -110,6 +110,12 @@ cargo run -p simple-bot -- --server localhost --nickname MyBot
 
 # Client voix
 cargo run -p voice-client -- --server localhost --nickname MyClient
+
+# Suite de tests (offline uniquement)
+cargo run -p test-suite -- --offline
+
+# Suite de tests complète (nécessite un serveur TS3)
+cargo run -p test-suite -- --server <host:port> --password <password>
 ```
 
 ## 📚 Documentation
@@ -186,13 +192,13 @@ client = lib.tslib_client_connect(
 - [x] Parsing BBCode
 - [x] Gestion des canaux
 - [x] Bindings FFI
+- [x] Intégration complète avec tsclientlib
+- [x] Audio capture/playback réel (cpal)
+- [x] Encodage/décodage Opus
+- [x] Tests d'intégration (71 tests : 48 offline + 23 online)
 
 ### En cours
 
-- [ ] Intégration complète avec tsclientlib
-- [ ] Audio capture/playback réel (cpal)
-- [ ] Encodage/décodage Opus
-- [ ] Tests d'intégration
 - [ ] Bindings Python (PyO3)
 - [ ] Bindings Java (JNI)
 
@@ -209,7 +215,8 @@ tslib/
 │   └── tslib-ffi/        # FFI : bindings C
 ├── examples/
 │   ├── simple-bot/       # Exemple de bot
-│   └── voice-client/     # Exemple de client voix
+│   ├── voice-client/     # Exemple de client voix
+│   └── test-suite/       # Suite de tests (71 tests)
 └── Cargo.toml            # Workspace
 ```
 
