@@ -14,9 +14,9 @@ use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use tsclientlib::prelude::*;
-use tsclientlib::{Connection as TsConnection, DisconnectOptions, InMessage, Reason, StreamItem, ClientId, TextMessageTargetMode};
+use tsclientlib::{Connection as TsConnection, DisconnectOptions, InMessage, Reason, StreamItem, ClientId};
 use tsclientlib::MessageTarget as TsMessageTarget;
 use tsclientlib::data::{Client as TsClient, Channel as TsChannel};
 use tsclientlib::events::{Event as TsEvent, PropertyId};
@@ -224,48 +224,55 @@ impl Client {
     /// subscribes to all channels and synchronizes the server state
     /// (users, channels, etc.).
     pub async fn wait_connected(&mut self) -> Result<()> {
-        use futures::future;
-
         let con = self
             .connection
             .as_mut()
             .ok_or(ConnectionError::NotConnected)?;
 
-        let result: Option<std::result::Result<StreamItem, tsclientlib::Error>> = con
-            .events()
-            .try_filter(|e| future::ready(matches!(e, StreamItem::BookEvents(_))))
-            .next()
-            .await;
-
-        match result {
-            Some(Ok(_)) => {
-                // Update connection state
-                self.state = ConnectionState::Connected;
-
-                // Subscribe to all channels so we can see all users
-                self.subscribe_all_channels()?;
-
-                // Synchronize full state from server
-                self.sync_state()?;
-
-                // Emit connected event
-                let _ = self.event_tx.send(Event::Connected {
-                    server_name: self.server_state.server.name.clone(),
-                    welcome_message: self.server_state.server.welcome_message.clone(),
-                });
-
-                info!(
-                    "Connected to {} - {} users, {} channels",
-                    self.server_state.server.name,
-                    self.server_state.users.len(),
-                    self.server_state.channels.len()
-                );
-
-                Ok(())
+        // Poll events one by one without filtering, so we don't
+        // discard non-BookEvents items (messages, audio, etc.)
+        loop {
+            match con.events().next().await {
+                Some(Ok(item)) => {
+                    if matches!(item, StreamItem::BookEvents(_)) {
+                        break;
+                    }
+                    // Other events during connection setup are expected; just skip them
+                }
+                Some(Err(e)) => {
+                    return Err(ConnectionError::ConnectFailed(e.to_string()).into());
+                }
+                None => {
+                    return Err(
+                        ConnectionError::ConnectFailed("Connection closed".to_string()).into(),
+                    );
+                }
             }
-            Some(Err(e)) => Err(ConnectionError::ConnectFailed(e.to_string()).into()),
-            None => Err(ConnectionError::ConnectFailed("Connection closed".to_string()).into()),
         }
+
+        // Update connection state
+        self.state = ConnectionState::Connected;
+
+        // Subscribe to all channels so we can see all users
+        self.subscribe_all_channels()?;
+
+        // Synchronize full state from server
+        self.sync_state()?;
+
+        // Emit connected event
+        let _ = self.event_tx.send(Event::Connected {
+            server_name: self.server_state.server.name.clone(),
+            welcome_message: self.server_state.server.welcome_message.clone(),
+        });
+
+        info!(
+            "Connected to {} - {} users, {} channels",
+            self.server_state.server.name,
+            self.server_state.users.len(),
+            self.server_state.channels.len()
+        );
+
+        Ok(())
     }
 
     /// Subscribe to all channels on the server
@@ -345,9 +352,13 @@ impl Client {
                 Some(event)
             }
             StreamItem::MessageEvent(msg) => {
+                debug!("Received MessageEvent: {:?}", msg.get_command_name());
                 self.process_message_event(msg)
             }
-            _ => None,
+            other => {
+                debug!("Unhandled StreamItem variant: {:?}", std::mem::discriminant(&other));
+                None
+            }
         }
     }
 
@@ -366,7 +377,38 @@ impl Client {
                 debug!("Property removed: {:?}", id);
                 self.handle_property_removed(id, old)
             }
-            _ => None,
+            TsEvent::Message { target, invoker, message } => {
+                match target {
+                    TsMessageTarget::Poke(_) => {
+                        let event = Event::Poked {
+                            poker_id: invoker.id.0,
+                            poker_name: invoker.name.clone(),
+                            message: message.clone(),
+                        };
+                        debug!("Poked by {} ({}): {}", invoker.name, invoker.id.0, message);
+                        Some(event)
+                    }
+                    _ => {
+                        let msg_target = match target {
+                            TsMessageTarget::Server => crate::events::MessageTarget::Server,
+                            TsMessageTarget::Channel => crate::events::MessageTarget::Channel,
+                            TsMessageTarget::Client(_) => crate::events::MessageTarget::Private,
+                            TsMessageTarget::Poke(_) => unreachable!(),
+                        };
+                        let event = Event::TextMessage {
+                            sender_id: invoker.id.0,
+                            sender_name: invoker.name.clone(),
+                            message: message.clone(),
+                            target: msg_target,
+                        };
+                        debug!(
+                            "Text message from {} ({}): {}",
+                            invoker.name, invoker.id.0, message
+                        );
+                        Some(event)
+                    }
+                }
+            }
         }
     }
 
@@ -530,63 +572,13 @@ impl Client {
         Ok(())
     }
 
-    /// Process an incoming message event
+    /// Process an incoming message event (non-book protocol messages)
+    ///
+    /// Note: Text messages and pokes arrive via `BookEvents` as `Event::Message`,
+    /// not here. This handles remaining protocol messages like channellistfinished.
     fn process_message_event(&mut self, msg: InMessage) -> Option<Event> {
-        match msg {
-            InMessage::TextMessage(text_msg) => {
-                // Get the first part of the message (messages can have multiple parts)
-                let part = text_msg.iter().next()?;
-
-                // Convert TextMessageTargetMode to our MessageTarget
-                let target = match part.target {
-                    TextMessageTargetMode::Server => crate::events::MessageTarget::Server,
-                    TextMessageTargetMode::Channel => crate::events::MessageTarget::Channel,
-                    TextMessageTargetMode::Client => crate::events::MessageTarget::Private,
-                    TextMessageTargetMode::Unknown => {
-                        warn!("Received message with unknown target mode");
-                        return None;
-                    }
-                };
-
-                let event = Event::TextMessage {
-                    sender_id: part.invoker_id.0,
-                    sender_name: part.invoker_name.clone(),
-                    message: part.message.clone(),
-                    target,
-                };
-
-                debug!(
-                    "Text message from {} ({}): {}",
-                    part.invoker_name, part.invoker_id.0, part.message
-                );
-
-                let _ = self.event_tx.send(event.clone());
-                Some(event)
-            }
-            InMessage::ClientPoke(poke_msg) => {
-                // Get the first part of the poke message
-                let part = poke_msg.iter().next()?;
-
-                let event = Event::Poked {
-                    poker_id: part.invoker_id.0,
-                    poker_name: part.invoker_name.clone(),
-                    message: part.message.clone(),
-                };
-
-                debug!(
-                    "Poked by {} ({}): {}",
-                    part.invoker_name, part.invoker_id.0, part.message
-                );
-
-                let _ = self.event_tx.send(event.clone());
-                Some(event)
-            }
-            _ => {
-                // Other message types we don't handle yet
-                debug!("Unhandled message event: {:?}", msg.get_command_name());
-                None
-            }
-        }
+        debug!("Unhandled MessageEvent: {:?}", msg.get_command_name());
+        None
     }
 
     /// Dispatch an event to all handlers

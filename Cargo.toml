@@ -12,6 +12,7 @@ members = [
     "examples/simple-bot",
     "examples/voice-client",
     "examples/test-suite",
+    "examples/send-msg",
 ]
 
 [workspace.package]
