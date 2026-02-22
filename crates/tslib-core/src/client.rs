@@ -18,6 +18,9 @@ use futures::{StreamExt, TryStreamExt};
 use tsclientlib::prelude::*;
 use tsclientlib::{Connection as TsConnection, DisconnectOptions, InMessage, Reason, StreamItem, ClientId, TextMessageTargetMode};
 use tsclientlib::MessageTarget as TsMessageTarget;
+use tsclientlib::data::{Client as TsClient, Channel as TsChannel};
+use tsclientlib::events::{Event as TsEvent, PropertyId};
+use tsproto_types::{ChannelType as TsChannelType, ClientType as TsClientType, Codec as TsCodec};
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType};
 
 /// The main TeamSpeak client
@@ -250,10 +253,17 @@ impl Client {
         match item {
             StreamItem::BookEvents(book_events) => {
                 // Process book events (client/channel changes)
+                let mut first_event = None;
                 for event in book_events {
-                    self.process_book_event(event);
+                    if let Some(evt) = self.process_book_event(event) {
+                        // Send via broadcast channel
+                        let _ = self.event_tx.send(evt.clone());
+                        if first_event.is_none() {
+                            first_event = Some(evt);
+                        }
+                    }
                 }
-                None
+                first_event
             }
             StreamItem::Audio(audio) => {
                 // Audio received - extract data from InAudioBuf
@@ -298,19 +308,183 @@ impl Client {
         }
     }
 
-    /// Process a book event
-    fn process_book_event(&mut self, event: tsclientlib::events::Event) {
-        use tsclientlib::events::Event as TsEvent;
-
-        match event {
-            TsEvent::PropertyAdded { id, .. } | TsEvent::PropertyChanged { id, .. } => {
-                debug!("Property changed: {:?}", id);
+    /// Process a book event and return any high-level events to emit
+    fn process_book_event(&mut self, event: TsEvent) -> Option<Event> {
+        match &event {
+            TsEvent::PropertyAdded { id, .. } => {
+                debug!("Property added: {:?}", id);
+                self.handle_property_added(id)
             }
-            TsEvent::PropertyRemoved { id, .. } => {
+            TsEvent::PropertyChanged { id, old, .. } => {
+                debug!("Property changed: {:?}", id);
+                self.handle_property_changed(id, old)
+            }
+            TsEvent::PropertyRemoved { id, old, .. } => {
                 debug!("Property removed: {:?}", id);
+                self.handle_property_removed(id, old)
+            }
+            _ => None,
+        }
+    }
+
+    /// Handle a property being added (new client, channel, etc.)
+    fn handle_property_added(&mut self, id: &PropertyId) -> Option<Event> {
+        let con = self.connection.as_ref()?;
+        let state = con.get_state().ok()?;
+
+        match id {
+            PropertyId::Client(client_id) => {
+                // New client connected
+                if let Some(ts_client) = state.clients.get(client_id) {
+                    let user = ts_client_to_user(ts_client);
+                    self.server_state.users.insert(user.id, user.clone());
+                    info!("User joined: {} ({})", user.nickname, user.id);
+                    return Some(Event::UserJoined { user });
+                }
+            }
+            PropertyId::Channel(channel_id) => {
+                // New channel created
+                if let Some(ts_channel) = state.channels.get(channel_id) {
+                    let channel = ts_channel_to_channel(ts_channel);
+                    self.server_state.channels.insert(channel.id, channel.clone());
+                    info!("Channel created: {} ({})", channel.name, channel.id);
+                    return Some(Event::ChannelCreated { channel });
+                }
             }
             _ => {}
         }
+        None
+    }
+
+    /// Handle a property being changed
+    fn handle_property_changed(&mut self, id: &PropertyId, _old: &tsclientlib::events::PropertyValue) -> Option<Event> {
+        let con = self.connection.as_ref()?;
+        let state = con.get_state().ok()?;
+
+        match id {
+            PropertyId::ClientChannel(client_id) => {
+                // Client moved to a different channel
+                if let Some(ts_client) = state.clients.get(client_id) {
+                    let user = ts_client_to_user(ts_client);
+                    let from_channel = self.server_state.users
+                        .get(&user.id)
+                        .map(|u| u.channel_id)
+                        .unwrap_or(0);
+
+                    self.server_state.users.insert(user.id, user.clone());
+
+                    if from_channel != user.channel_id {
+                        info!("User {} moved from channel {} to {}", user.nickname, from_channel, user.channel_id);
+                        return Some(Event::UserMoved {
+                            user,
+                            from_channel,
+                            to_channel: ts_client.channel.0,
+                        });
+                    }
+                }
+            }
+            PropertyId::ClientName(client_id) |
+            PropertyId::ClientInputMuted(client_id) |
+            PropertyId::ClientOutputMuted(client_id) |
+            PropertyId::ClientAwayMessage(client_id) |
+            PropertyId::ClientTalkPower(client_id) |
+            PropertyId::ClientTalkPowerGranted(client_id) |
+            PropertyId::ClientIsRecording(client_id) => {
+                // Client property changed - update our state
+                if let Some(ts_client) = state.clients.get(client_id) {
+                    let user = ts_client_to_user(ts_client);
+                    self.server_state.users.insert(user.id, user.clone());
+                    return Some(Event::UserUpdated { user });
+                }
+            }
+            PropertyId::ChannelName(channel_id) |
+            PropertyId::ChannelTopic(channel_id) |
+            PropertyId::ChannelCodec(channel_id) |
+            PropertyId::ChannelMaxClients(channel_id) |
+            PropertyId::ChannelNeededTalkPower(channel_id) => {
+                // Channel property changed
+                if let Some(ts_channel) = state.channels.get(channel_id) {
+                    let channel = ts_channel_to_channel(ts_channel);
+                    self.server_state.channels.insert(channel.id, channel.clone());
+                    return Some(Event::ChannelEdited { channel });
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Handle a property being removed (client left, channel deleted, etc.)
+    fn handle_property_removed(&mut self, id: &PropertyId, _old: &tsclientlib::events::PropertyValue) -> Option<Event> {
+        match id {
+            PropertyId::Client(client_id) => {
+                // Client disconnected
+                if let Some(user) = self.server_state.users.remove(&client_id.0) {
+                    info!("User left: {} ({})", user.nickname, user.id);
+                    return Some(Event::UserLeft {
+                        user,
+                        reason: "Disconnected".to_string(),
+                    });
+                }
+            }
+            PropertyId::Channel(channel_id) => {
+                // Channel deleted
+                if self.server_state.channels.remove(&channel_id.0).is_some() {
+                    info!("Channel deleted: {}", channel_id.0);
+                    return Some(Event::ChannelDeleted {
+                        channel_id: channel_id.0,
+                    });
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Synchronize the full state from tsclientlib
+    /// Call this after connection to populate initial state
+    pub fn sync_state(&mut self) -> Result<()> {
+        let con = self.connection.as_ref().ok_or(ConnectionError::NotConnected)?;
+        let state = con.get_state().map_err(|e| Error::Internal(e.to_string()))?;
+
+        // Clear existing state
+        self.server_state.users.clear();
+        self.server_state.channels.clear();
+
+        // Sync server info
+        self.server_state.server.name = state.server.name.clone();
+        self.server_state.server.welcome_message = Some(state.server.welcome_message.clone());
+        self.server_state.server.platform = state.server.platform.clone();
+        self.server_state.server.version = state.server.version.clone();
+        self.server_state.server.max_clients = state.server.max_clients as u32;
+
+        // Sync all channels
+        for (_, ts_channel) in &state.channels {
+            let channel = ts_channel_to_channel(ts_channel);
+            self.server_state.channels.insert(channel.id, channel);
+        }
+
+        // Sync all clients
+        for (_, ts_client) in &state.clients {
+            let user = ts_client_to_user(ts_client);
+            self.server_state.users.insert(user.id, user);
+        }
+
+        // Update our client ID
+        self.client_id = Some(state.own_client.0);
+
+        // Update our channel ID
+        if let Some(our_client) = state.clients.get(&state.own_client) {
+            self.channel_id = Some(our_client.channel.0);
+        }
+
+        info!(
+            "State synced: {} users, {} channels",
+            self.server_state.users.len(),
+            self.server_state.channels.len()
+        );
+
+        Ok(())
     }
 
     /// Process an incoming message event
@@ -627,5 +801,108 @@ fn audio_codec_to_codec_type(codec: AudioCodec) -> CodecType {
         AudioCodec::CeltMono => CodecType::CeltMono,
         AudioCodec::OpusVoice => CodecType::OpusVoice,
         AudioCodec::OpusMusic => CodecType::OpusMusic,
+    }
+}
+
+/// Convert tsclientlib Client to our User type
+fn ts_client_to_user(client: &TsClient) -> User {
+    // Convert UID bytes to base64 string
+    let uid = client.uid.as_ref()
+        .map(|u| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &u.0))
+        .unwrap_or_default();
+
+    // Check client type
+    let client_type = if matches!(client.client_type, TsClientType::Query { .. }) { 1 } else { 0 };
+
+    User {
+        id: client.id.0,
+        uid,
+        database_id: client.database_id.0,
+        channel_id: client.channel.0,
+        nickname: client.name.clone(),
+        client_type,
+        is_talking: false, // Tracked separately via audio
+        is_input_muted: client.input_muted,
+        is_output_muted: client.output_muted,
+        has_input_hardware: client.input_hardware_enabled,
+        has_output_hardware: client.output_hardware_enabled,
+        is_away: client.away_message.is_some(),
+        away_message: client.away_message.clone(),
+        is_recording: client.is_recording,
+        is_priority_speaker: client.is_priority_speaker,
+        is_channel_commander: client.is_channel_commander,
+        talk_power: client.talk_power,
+        is_talker: client.talk_power_granted,
+        server_groups: client.server_groups.iter().map(|g| g.0).collect(),
+        channel_group: client.channel_group.0,
+        platform: client.optional_data.as_ref().map(|o| o.platform.clone()).unwrap_or_default(),
+        version: client.optional_data.as_ref().map(|o| o.version.clone()).unwrap_or_default(),
+        country: None, // Not directly available in tsclientlib
+        description: None,
+        avatar_id: None,
+        icon_id: 0,
+        idle_time: 0,
+        connected_time: 0,
+    }
+}
+
+/// Convert tsclientlib Channel to our Channel type
+fn ts_channel_to_channel(channel: &TsChannel) -> Channel {
+    let (is_permanent, is_semi_permanent) = match channel.channel_type {
+        TsChannelType::Permanent => (true, false),
+        TsChannelType::SemiPermanent => (false, true),
+        TsChannelType::Temporary => (false, false),
+    };
+
+    // Extract description from optional data
+    let description = channel.optional_data.as_ref().map(|o| o.description.clone());
+
+    // Convert MaxClients enum to i32 (-1 for unlimited)
+    let max_clients = channel.max_clients
+        .map(|m| match m {
+            tsproto_types::MaxClients::Unlimited => -1,
+            tsproto_types::MaxClients::Inherited => -1,
+            tsproto_types::MaxClients::Limited(n) => n as i32,
+        })
+        .unwrap_or(-1);
+
+    let max_family_clients = channel.max_family_clients
+        .map(|m| match m {
+            tsproto_types::MaxClients::Unlimited => -1,
+            tsproto_types::MaxClients::Inherited => -1,
+            tsproto_types::MaxClients::Limited(n) => n as i32,
+        })
+        .unwrap_or(-1);
+
+    Channel {
+        id: channel.id.0,
+        parent_id: channel.parent.0,
+        name: channel.name.clone(),
+        topic: channel.topic.clone(),
+        description,
+        order: channel.order.0 as i32,
+        is_permanent,
+        is_semi_permanent,
+        is_default: channel.is_default.unwrap_or(false),
+        has_password: channel.has_password.unwrap_or(false),
+        codec: ts_codec_to_u8(channel.codec),
+        codec_quality: channel.codec_quality.unwrap_or(7),
+        max_clients,
+        max_family_clients,
+        needed_talk_power: channel.needed_talk_power.unwrap_or(0),
+        icon_id: 0,
+        is_subscribed: channel.subscribed,
+    }
+}
+
+/// Convert tsclientlib Codec to u8
+fn ts_codec_to_u8(codec: TsCodec) -> u8 {
+    match codec {
+        TsCodec::SpeexNarrowband => 0,
+        TsCodec::SpeexWideband => 1,
+        TsCodec::SpeexUltrawideband => 2,
+        TsCodec::CeltMono => 3,
+        TsCodec::OpusVoice => 4,
+        TsCodec::OpusMusic => 5,
     }
 }
