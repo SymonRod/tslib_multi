@@ -271,9 +271,6 @@ public class Example {
 - [x] Audio capture/playback réel (cpal)
 - [x] Encodage/décodage Opus
 - [x] Tests d'intégration (71 tests : 48 offline + 23 online)
-
-### En cours
-
 - [x] Bindings Python (PyO3)
 - [x] Bindings Java (JNI)
 
