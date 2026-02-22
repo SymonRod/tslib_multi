@@ -12,6 +12,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use tslib_audio::{AudioConfig, AudioManager};
 use tslib_core::{Client, ClientConfig, Event, Identity};
+use tslib_core::events::AudioCodec;
 
 /// Voice-enabled TeamSpeak Client
 #[derive(Parser, Debug)]
@@ -114,7 +115,7 @@ async fn main() -> Result<()> {
     info!("Connected!");
 
     // Subscribe to events
-    let mut events = client.subscribe();
+    let _events = client.subscribe();
 
     // Start audio capture
     info!("Starting audio capture...");
@@ -172,8 +173,9 @@ async fn main() -> Result<()> {
         // Handle captured audio (non-blocking check)
         while let Ok(packet) = audio_rx.try_recv() {
             if packet.voice_activity {
-                // TODO: Send audio packet to server
-                // client.send_audio(&packet.data, AudioCodec::OpusVoice)?;
+                if let Err(e) = client.send_audio(&packet.data, AudioCodec::OpusVoice) {
+                    warn!("Failed to send audio: {}", e);
+                }
             }
         }
 

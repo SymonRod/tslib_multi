@@ -1,15 +1,25 @@
 //! Main bot implementation
 
-use crate::command::{Command, CommandContext, CommandHandler, CommandRegistry, FnHandler};
+use crate::command::{Command, CommandContext, CommandRegistry, FnHandler};
 use crate::config::BotConfig;
 use crate::error::{BotError, Result};
 use crate::plugin::{Plugin, PluginManager};
 use std::future::Future;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
-use tslib_core::{Client, ClientConfig, Event, EventHandler};
+use tslib_core::{Client, ClientConfig, Event};
+
+/// A reply message queued by a command handler
+struct ReplyMessage {
+    /// Target client ID (for private messages)
+    sender_id: u16,
+    /// The message text
+    message: String,
+    /// Whether to reply privately
+    is_private: bool,
+}
 
 /// TeamSpeak bot
 pub struct Bot {
@@ -68,6 +78,22 @@ impl Bot {
         Ok(())
     }
 
+    /// Reconnect to the server
+    async fn reconnect(&mut self) -> Result<()> {
+        // Drop existing connection
+        self.client.take();
+
+        // Create a new connection
+        self.connect().await?;
+
+        // Wait for the new connection to be established
+        if let Some(client) = self.client.as_mut() {
+            client.wait_connected().await.map_err(BotError::Core)?;
+        }
+
+        Ok(())
+    }
+
     /// Register a command
     pub async fn command<F, Fut>(&self, name: &str, handler: F)
     where
@@ -96,26 +122,51 @@ impl Bot {
 
         *self.running.write().await = true;
 
-        let client = self.client.as_ref().unwrap();
-        let mut events = client.subscribe();
+        // Wait for connection to be fully established
+        {
+            let client = self.client.as_mut().unwrap();
+            info!("Waiting for connection...");
+            client.wait_connected().await.map_err(BotError::Core)?;
+        }
+
+        let mut events = self.client.as_ref().unwrap().subscribe();
         let commands = self.commands.clone();
         let config = self.config.clone();
+
+        // Channel for command replies back to the main loop
+        let (reply_tx, mut reply_rx) = mpsc::channel::<ReplyMessage>(64);
 
         info!("Bot is running. Press Ctrl+C to stop.");
 
         while *self.running.read().await {
+            // Process pending replies from command handlers
+            while let Ok(reply) = reply_rx.try_recv() {
+                if let Some(client) = self.client.as_mut() {
+                    let result = if reply.is_private {
+                        client.send_private_message(reply.sender_id, &reply.message)
+                    } else {
+                        client.send_channel_message(&reply.message)
+                    };
+                    if let Err(e) = result {
+                        error!("Failed to send reply: {}", e);
+                    }
+                }
+            }
+
             tokio::select! {
                 event = events.recv() => {
                     match event {
                         Ok(Event::TextMessage { sender_id, sender_name, message, target }) => {
+                            let is_private = matches!(target, tslib_core::events::MessageTarget::Private);
                             Self::handle_message(
                                 &commands,
                                 &config,
+                                reply_tx.clone(),
                                 sender_id,
                                 sender_name,
                                 None,
                                 message,
-                                matches!(target, tslib_core::events::MessageTarget::Private),
+                                is_private,
                             ).await;
                         }
                         Ok(Event::Disconnected { reason }) => {
@@ -123,7 +174,15 @@ impl Bot {
                             if config.auto_reconnect {
                                 info!("Reconnecting in {:?}...", config.reconnect_delay);
                                 tokio::time::sleep(config.reconnect_delay).await;
-                                // TODO: Reconnect
+                                drop(events);
+                                if let Err(e) = self.reconnect().await {
+                                    error!("Reconnection failed: {}", e);
+                                    break;
+                                }
+                                events = self.client.as_ref().unwrap().subscribe();
+                                info!("Reconnected successfully");
+                            } else {
+                                break;
                             }
                         }
                         Ok(_) => {}
@@ -161,6 +220,7 @@ impl Bot {
     async fn handle_message(
         commands: &Arc<RwLock<CommandRegistry>>,
         config: &BotConfig,
+        reply_tx: mpsc::Sender<ReplyMessage>,
         sender_id: u16,
         sender_name: String,
         sender_uid: Option<String>,
@@ -184,6 +244,11 @@ impl Bot {
                     }
                 }
 
+                // Create a reply function that sends through the channel
+                let reply_sender = reply_tx.clone();
+                let reply_target_id = sender_id;
+                let reply_is_private = is_private;
+
                 let ctx = CommandContext::new(
                     sender_id,
                     sender_name.clone(),
@@ -192,7 +257,19 @@ impl Bot {
                     args,
                     message,
                     is_private,
-                    |_msg| Box::pin(async { Ok(()) }), // TODO: Actual reply
+                    move |msg: String| {
+                        let tx = reply_sender.clone();
+                        Box::pin(async move {
+                            tx.send(ReplyMessage {
+                                sender_id: reply_target_id,
+                                message: msg,
+                                is_private: reply_is_private,
+                            })
+                            .await
+                            .map_err(|e| BotError::Command(format!("Failed to queue reply: {}", e)))?;
+                            Ok(())
+                        })
+                    },
                 );
 
                 // Check can_use

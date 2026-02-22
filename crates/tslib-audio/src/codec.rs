@@ -209,6 +209,7 @@ mod tests {
     fn test_encoder_creation() {
         let config = AudioConfig::default();
         let encoder = OpusEncoder::new(&config).unwrap();
-        assert_eq!(encoder.sample_rate, 48000);
+        assert_eq!(encoder.channels, 1);
+        assert_eq!(encoder.frame_size, config.frame_size_samples());
     }
 }
