@@ -217,7 +217,8 @@ impl Client {
     /// Wait for the initial connection to be established
     ///
     /// This waits until we receive the first BookEvents, indicating
-    /// the connection is fully established.
+    /// the connection is fully established. It also automatically
+    /// synchronizes the server state (users, channels, etc.).
     pub async fn wait_connected(&mut self) -> Result<()> {
         use futures::future;
 
@@ -234,13 +235,25 @@ impl Client {
 
         match result {
             Some(Ok(_)) => {
-                // Update server info if available
-                if let Ok(state) = con.get_state() {
-                    let _ = self.event_tx.send(Event::Connected {
-                        server_name: state.server.name.clone(),
-                        welcome_message: Some(state.server.welcome_message.clone()),
-                    });
-                }
+                // Update connection state
+                self.state = ConnectionState::Connected;
+
+                // Synchronize full state from server
+                self.sync_state()?;
+
+                // Emit connected event
+                let _ = self.event_tx.send(Event::Connected {
+                    server_name: self.server_state.server.name.clone(),
+                    welcome_message: self.server_state.server.welcome_message.clone(),
+                });
+
+                info!(
+                    "Connected to {} - {} users, {} channels",
+                    self.server_state.server.name,
+                    self.server_state.users.len(),
+                    self.server_state.channels.len()
+                );
+
                 Ok(())
             }
             Some(Err(e)) => Err(ConnectionError::ConnectFailed(e.to_string()).into()),
