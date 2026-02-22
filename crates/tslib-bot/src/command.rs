@@ -62,7 +62,7 @@ impl CommandContext {
     }
 
     /// Get argument or default
-    pub fn arg_or(&self, index: usize, default: &str) -> &str {
+    pub fn arg_or<'a>(&'a self, index: usize, default: &'a str) -> &'a str {
         self.args.get(index).map(|s| s.as_str()).unwrap_or(default)
     }
 
@@ -208,7 +208,7 @@ impl CommandRegistry {
     }
 
     /// Parse a message and return command + context if valid
-    pub fn parse(&self, message: &str) -> Option<(&str, Vec<String>)> {
+    pub fn parse<'a>(&self, message: &'a str) -> Option<(&'a str, Vec<String>)> {
         if !message.starts_with(&self.prefix) {
             return None;
         }

@@ -155,12 +155,12 @@ impl ClientConfigBuilder {
 }
 
 /// Client configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ClientConfig {
     /// Server address (host:port)
     pub address: String,
     /// Identity for authentication
-    #[serde(skip)]
+    #[serde(skip_serializing)]
     pub identity: Identity,
     /// Display nickname
     pub nickname: String,

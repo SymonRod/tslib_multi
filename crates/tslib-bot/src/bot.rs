@@ -171,12 +171,13 @@ impl Bot {
         let registry = commands.read().await;
 
         if let Some((cmd_name, args)) = registry.parse(&message) {
-            if let Some(command) = registry.get(cmd_name) {
+            let cmd_name_owned = cmd_name.to_string();
+            if let Some(command) = registry.get(&cmd_name_owned) {
                 // Check owner-only
                 if command.owner_only {
                     if let Some(ref uid) = sender_uid {
                         if !config.owners.contains(uid) {
-                            debug!("User {} tried to use owner-only command {}", sender_name, cmd_name);
+                            debug!("User {} tried to use owner-only command {}", sender_name, cmd_name_owned);
                             return;
                         }
                     } else {
@@ -188,7 +189,7 @@ impl Bot {
                     sender_id,
                     sender_name.clone(),
                     sender_uid,
-                    cmd_name.to_string(),
+                    cmd_name_owned.clone(),
                     args,
                     message,
                     is_private,
@@ -197,17 +198,17 @@ impl Bot {
 
                 // Check can_use
                 if !command.handler.can_use(&ctx) {
-                    debug!("User {} cannot use command {}", sender_name, cmd_name);
+                    debug!("User {} cannot use command {}", sender_name, cmd_name_owned);
                     return;
                 }
 
                 // Execute command
                 match command.handler.handle(ctx).await {
                     Ok(()) => {
-                        debug!("Command {} executed successfully", cmd_name);
+                        debug!("Command {} executed successfully", cmd_name_owned);
                     }
                     Err(e) => {
-                        error!("Command {} failed: {}", cmd_name, e);
+                        error!("Command {} failed: {}", cmd_name_owned, e);
                     }
                 }
             }
