@@ -13,6 +13,7 @@ Une bibliothèque modulaire et cross-platform pour créer des clients TeamSpeak 
 | `tslib-bot` | Framework pour créer des bots avec commandes |
 | `tslib-ffi` | Bindings C pour intégration Python/Java/Go |
 | `tslib-python` | Bindings Python natifs via PyO3 |
+| `tslib-jni` | Bindings Java natifs via JNI |
 
 ## 🚀 Démarrage rapide
 
@@ -213,6 +214,47 @@ html = tslib.bbcode_to_html("[b]Hello[/b]")
 client.disconnect()
 ```
 
+## ☕ Bindings Java (JNI)
+
+Bindings Java natifs — API Java idiomatique complète avec `AutoCloseable`.
+
+### Build
+
+```bash
+# Build la bibliothèque native
+cargo build --release -p tslib-jni
+
+# Compile les classes Java
+javac java/src/main/java/dev/tslib/*.java
+```
+
+### Exemple
+
+```java
+import dev.tslib.*;
+
+public class Example {
+    static { System.loadLibrary("tslib_jni"); }
+
+    public static void main(String[] args) {
+        try (Identity identity = new Identity()) {
+            System.out.println("UID: " + identity.getUniqueId());
+
+            try (Client client = new Client("localhost:9987", identity, "JavaBot")) {
+                client.waitConnected();
+                client.sendServerMessage("Hello from Java!");
+
+                for (User user : client.getUsers()) {
+                    System.out.println("  " + user.nickname + " (ch " + user.channelId + ")");
+                }
+            }
+        }
+
+        String html = BBCode.toHtml("[b]Hello[/b]");
+    }
+}
+```
+
 ## 📋 Fonctionnalités
 
 ### Implémentées
@@ -233,7 +275,7 @@ client.disconnect()
 ### En cours
 
 - [x] Bindings Python (PyO3)
-- [ ] Bindings Java (JNI)
+- [x] Bindings Java (JNI)
 
 ## 🏗️ Architecture
 
@@ -246,7 +288,9 @@ tslib/
 │   ├── tslib-channel/    # Canaux : arborescence, gestion
 │   ├── tslib-bot/        # Bot : commandes, plugins
 │   ├── tslib-ffi/        # FFI : bindings C
-│   └── tslib-python/     # Bindings Python (PyO3)
+│   ├── tslib-python/     # Bindings Python (PyO3)
+│   └── tslib-jni/        # Bindings Java (JNI)
+├── java/                 # Classes Java
 ├── examples/
 │   ├── simple-bot/       # Exemple de bot
 │   ├── voice-client/     # Exemple de client voix
