@@ -319,6 +319,17 @@ pub fn event_to_dict<'py>(py: Python<'py>, event: &tslib_core::events::Event) ->
             let _ = dict.set_item("codec", codec.id());
             let _ = dict.set_item("data_len", data.len());
         }
+        Event::FileDownloaded { channel_id, path, data } => {
+            let _ = dict.set_item("type", "file_downloaded");
+            let _ = dict.set_item("channel_id", channel_id);
+            let _ = dict.set_item("path", path.as_str());
+            let _ = dict.set_item("data_len", data.len());
+        }
+        Event::FileTransferFailed { path, error } => {
+            let _ = dict.set_item("type", "file_transfer_failed");
+            let _ = dict.set_item("path", path.as_str());
+            let _ = dict.set_item("error", error.as_str());
+        }
     }
 
     dict

@@ -1,4 +1,4 @@
-use jni::objects::{JClass, JObject, JString, JValue};
+use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint, jlong, jobject, jobjectArray};
 use jni::JNIEnv;
 
@@ -105,8 +105,25 @@ pub extern "system" fn Java_dev_tslib_Client_nativeWaitConnected(
     _class: JClass,
     ptr: jlong,
 ) {
+    log::info!("nativeWaitConnected: waiting...");
     let handle = ptr_to_handle(ptr);
     let result = handle.runtime.block_on(handle.client.wait_connected());
+    match &result {
+        Ok(()) => {
+            log::info!(
+                "nativeWaitConnected: OK — {} users, {} channels (server_state)",
+                handle.client.users().len(),
+                handle.client.channels().len()
+            );
+            // Also check direct connection state
+            let direct = handle.client.users_from_connection();
+            log::info!(
+                "nativeWaitConnected: direct connection has {} users",
+                direct.len()
+            );
+        }
+        Err(e) => log::warn!("nativeWaitConnected: FAILED — {}", e),
+    }
     to_jni_result(&mut env, result);
 }
 
@@ -156,6 +173,11 @@ pub extern "system" fn Java_dev_tslib_Client_nativeDisconnect(
 ) {
     let handle = ptr_to_handle(ptr);
     to_jni_result(&mut env, handle.client.disconnect());
+    // Drive the tokio runtime for 500ms to ensure the disconnect packet
+    // is actually sent over the network before the caller destroys us
+    handle.runtime.block_on(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    });
 }
 
 /// `Client.isConnected()`
@@ -265,7 +287,27 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetUsers(
     ptr: jlong,
 ) -> jobjectArray {
     let handle = ptr_to_handle(ptr);
-    let users = handle.client.users();
+
+    // Try to get users from server_state first
+    let mut users = handle.client.users();
+
+    // If server_state is empty, try syncing from tsclientlib state
+    if users.is_empty() {
+        log::debug!("nativeGetUsers: server_state.users is empty, trying sync_state");
+        if let Err(e) = handle.client.sync_state() {
+            log::warn!("nativeGetUsers: sync_state failed: {}", e);
+        }
+        users = handle.client.users();
+    }
+
+    // If still empty, try reading directly from tsclientlib state
+    if users.is_empty() {
+        log::debug!("nativeGetUsers: still empty after sync, trying direct read");
+        users = handle.client.users_from_connection();
+        log::info!("nativeGetUsers: direct read got {} users", users.len());
+    }
+
+    log::debug!("nativeGetUsers: returning {} users", users.len());
 
     let user_class = match env.find_class("dev/tslib/User") {
         Ok(c) => c,
@@ -402,5 +444,203 @@ pub extern "system" fn Java_dev_tslib_Client_nativeSyncState(
     ptr: jlong,
 ) {
     let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.sync_state());
+    let result = handle.client.sync_state();
+    match &result {
+        Ok(()) => {
+            log::info!(
+                "nativeSyncState: OK — {} users, {} channels",
+                handle.client.users().len(),
+                handle.client.channels().len()
+            );
+        }
+        Err(e) => {
+            log::warn!("nativeSyncState: FAILED — {}", e);
+        }
+    }
+    to_jni_result(&mut env, result);
+}
+
+/// `Client.downloadFile(channelId, path)` — initiate a file download.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeDownloadFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    channel_id: jlong,
+    path: JString,
+) {
+    let path = match require_string(&mut env, &path) {
+        Ok(s) => s,
+        Err(()) => return,
+    };
+    let handle = ptr_to_handle(ptr);
+    to_jni_result(
+        &mut env,
+        handle.client.download_file(channel_id as u64, &path),
+    );
+}
+
+/// `Client.uploadFile(channelId, path, data, overwrite)` — initiate a file upload.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeUploadFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    channel_id: jlong,
+    path: JString,
+    data: JByteArray,
+    overwrite: jboolean,
+) {
+    let path = match require_string(&mut env, &path) {
+        Ok(s) => s,
+        Err(()) => return,
+    };
+    let bytes = match env.convert_byte_array(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            throw_tslib_exception(&mut env, &format!("Failed to read upload data: {e}"));
+            return;
+        }
+    };
+    let handle = ptr_to_handle(ptr);
+    to_jni_result(
+        &mut env,
+        handle.client.upload_file(channel_id as u64, &path, &bytes, overwrite != 0),
+    );
+}
+
+/// `Client.setInputMuted(muted)` — notify the server of our input muted state.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeSetInputMuted(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    muted: jboolean,
+) {
+    let muted_bool = muted != 0;
+    log::info!("nativeSetInputMuted: muted={}", muted_bool);
+    let handle = ptr_to_handle(ptr);
+    let result = handle.client.set_input_muted(muted_bool);
+    match &result {
+        Ok(()) => log::info!("nativeSetInputMuted: OK"),
+        Err(e) => log::error!("nativeSetInputMuted: FAILED — {}", e),
+    }
+    to_jni_result(&mut env, result);
+}
+
+/// `Client.listFiles(channelId, path)` — request file list for a channel directory.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeListFiles(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    channel_id: jlong,
+    path: JString,
+) {
+    let path_str = match require_string(&mut env, &path) {
+        Ok(s) => s,
+        Err(()) => return,
+    };
+    log::info!("nativeListFiles: channel={}, path={}", channel_id, path_str);
+    let handle = ptr_to_handle(ptr);
+    to_jni_result(&mut env, handle.client.list_files(channel_id as u64, &path_str));
+}
+
+/// `Client.queryChannelPermissions(channelId)` — query effective permissions for current user.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeQueryChannelPermissions(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    channel_id: jlong,
+) {
+    log::info!("nativeQueryChannelPermissions: channel={}", channel_id);
+    let handle = ptr_to_handle(ptr);
+    to_jni_result(&mut env, handle.client.query_channel_permissions(channel_id as u64));
+}
+
+/// `Client.deleteFile(channelId, name)` — delete a file on the server.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeDeleteFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    channel_id: jlong,
+    name: JString,
+) {
+    let name_str = match require_string(&mut env, &name) {
+        Ok(s) => s,
+        Err(()) => return,
+    };
+    let handle = ptr_to_handle(ptr);
+    to_jni_result(&mut env, handle.client.delete_file(channel_id as u64, &name_str));
+}
+
+/// `Client.renameFile(channelId, oldName, newName)` — rename a file on the server.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeRenameFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    channel_id: jlong,
+    old_name: JString,
+    new_name: JString,
+) {
+    let old = match require_string(&mut env, &old_name) {
+        Ok(s) => s,
+        Err(()) => return,
+    };
+    let new = match require_string(&mut env, &new_name) {
+        Ok(s) => s,
+        Err(()) => return,
+    };
+    let handle = ptr_to_handle(ptr);
+    to_jni_result(&mut env, handle.client.rename_file(channel_id as u64, &old, &new));
+}
+
+/// `Client.createDirectory(channelId, dirname)` — create a directory on the server.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeCreateDirectory(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    channel_id: jlong,
+    dirname: JString,
+) {
+    let dir = match require_string(&mut env, &dirname) {
+        Ok(s) => s,
+        Err(()) => return,
+    };
+    let handle = ptr_to_handle(ptr);
+    to_jni_result(&mut env, handle.client.create_directory(channel_id as u64, &dir));
+}
+
+/// `Client.sendAudio(data, codec)` — send encoded audio data to the server.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeSendAudio(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    data: JByteArray,
+    codec: jint,
+) {
+    let handle = ptr_to_handle(ptr);
+
+    let audio_codec = match tslib_core::AudioCodec::from_id(codec as u8) {
+        Some(c) => c,
+        None => {
+            throw_tslib_exception(&mut env, &format!("Invalid audio codec id: {codec}"));
+            return;
+        }
+    };
+
+    let bytes = match env.convert_byte_array(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            throw_tslib_exception(&mut env, &format!("Failed to read audio data: {e}"));
+            return;
+        }
+    };
+
+    to_jni_result(&mut env, handle.client.send_audio(&bytes, audio_codec));
 }

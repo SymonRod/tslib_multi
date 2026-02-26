@@ -17,6 +17,7 @@ serde.workspace = true
 
 # For BBCode parsing
 regex = "1.10"
+emojis = "0.8"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

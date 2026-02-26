@@ -12,10 +12,11 @@ public class ServerInfo {
     public final int channelsOnline;
     public final long uptime;
     public final String welcomeMessage;
+    public final long iconId;
 
     public ServerInfo(String name, String platform, String version,
                       int maxClients, int clientsOnline, int channelsOnline,
-                      long uptime, String welcomeMessage) {
+                      long uptime, String welcomeMessage, long iconId) {
         this.name = name;
         this.platform = platform;
         this.version = version;
@@ -24,6 +25,7 @@ public class ServerInfo {
         this.channelsOnline = channelsOnline;
         this.uptime = uptime;
         this.welcomeMessage = welcomeMessage;
+        this.iconId = iconId;
     }
 
     @Override

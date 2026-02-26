@@ -17,7 +17,7 @@ pub fn create_java_channel<'a>(env: &mut JNIEnv<'a>, ch: &Channel) -> JObject<'a
 
     env.new_object(
         "dev/tslib/Channel",
-        "(JJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;IZZZZBBIIIJ)V",
+        "(JJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;IZZZZBBIIIJJ)V",
         &[
             JValue::Long(ch.id as i64),
             JValue::Long(ch.parent_id as i64),
@@ -35,6 +35,7 @@ pub fn create_java_channel<'a>(env: &mut JNIEnv<'a>, ch: &Channel) -> JObject<'a
             JValue::Int(ch.max_family_clients),
             JValue::Int(ch.needed_talk_power),
             JValue::Long(ch.icon_id),
+            JValue::Long(ch.permission_hints as i64),
         ],
     )
     .unwrap_or_else(|_| JObject::null())
@@ -58,6 +59,10 @@ pub fn create_java_user<'a>(env: &mut JNIEnv<'a>, user: &User) -> JObject<'a> {
         Some(d) => JObject::from(env.new_string(d).unwrap()),
         None => JObject::null(),
     };
+    let avatar_id = match &user.avatar_id {
+        Some(a) => JObject::from(env.new_string(a).unwrap()),
+        None => JObject::null(),
+    };
 
     // Build server_groups as long[]
     let groups = env
@@ -68,7 +73,7 @@ pub fn create_java_user<'a>(env: &mut JNIEnv<'a>, user: &User) -> JObject<'a> {
 
     env.new_object(
         "dev/tslib/User",
-        "(ILjava/lang/String;JJLjava/lang/String;BZZZZZZZZZZZI[JJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)V",
+        "(ILjava/lang/String;JJLjava/lang/String;BZZZZZZZZZZILjava/lang/String;[JJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)V",
         &[
             JValue::Int(user.id as i32),
             JValue::Object(&JObject::from(uid)),
@@ -94,6 +99,7 @@ pub fn create_java_user<'a>(env: &mut JNIEnv<'a>, user: &User) -> JObject<'a> {
             JValue::Object(&JObject::from(version)),
             JValue::Object(&country),
             JValue::Object(&description),
+            JValue::Object(&avatar_id),
             JValue::Long(user.icon_id),
         ],
     )
@@ -112,7 +118,7 @@ pub fn create_java_server_info<'a>(env: &mut JNIEnv<'a>, info: &ServerInfo) -> J
 
     env.new_object(
         "dev/tslib/ServerInfo",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIJLjava/lang/String;)V",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIJLjava/lang/String;J)V",
         &[
             JValue::Object(&JObject::from(name)),
             JValue::Object(&JObject::from(platform)),
@@ -122,6 +128,7 @@ pub fn create_java_server_info<'a>(env: &mut JNIEnv<'a>, info: &ServerInfo) -> J
             JValue::Int(info.channels_online as i32),
             JValue::Long(info.uptime as i64),
             JValue::Object(&welcome_message),
+            JValue::Long(info.icon_id),
         ],
     )
     .unwrap_or_else(|_| JObject::null())
@@ -300,8 +307,62 @@ pub fn create_java_event<'a>(
         Event::AudioReceived { user_id, codec, data } => {
             put_int(env, &map, "user_id", *user_id as i32);
             put_int(env, &map, "codec", codec.id() as i32);
-            put_int(env, &map, "data_len", data.len() as i32);
+            // Put audio data as byte[]
+            let byte_array = env.byte_array_from_slice(data).unwrap();
+            let k = env.new_string("data").unwrap();
+            let _ = env.call_method(
+                &map,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[JValue::Object(&JObject::from(k)), JValue::Object(&JObject::from(byte_array))],
+            );
             "audio_received"
+        }
+        Event::FileDownloaded { channel_id, path, data } => {
+            put_long(env, &map, "channel_id", *channel_id as i64);
+            put_string(env, &map, "path", path);
+            // Put file data as byte[]
+            let byte_array = env.byte_array_from_slice(data).unwrap();
+            let k = env.new_string("data").unwrap();
+            let _ = env.call_method(
+                &map,
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                &[JValue::Object(&JObject::from(k)), JValue::Object(&JObject::from(byte_array))],
+            );
+            "file_downloaded"
+        }
+        Event::FileUploaded { channel_id, path } => {
+            put_long(env, &map, "channel_id", *channel_id as i64);
+            put_string(env, &map, "path", path);
+            "file_uploaded"
+        }
+        Event::FileTransferFailed { path, error } => {
+            put_string(env, &map, "path", path);
+            put_string(env, &map, "error", error);
+            "file_transfer_failed"
+        }
+        Event::FileListReceived { channel_id, path, files } => {
+            put_long(env, &map, "channel_id", *channel_id as i64);
+            put_string(env, &map, "path", path);
+            // Serialize files as JSON array string
+            let files_json: Vec<String> = files.iter().map(|f| {
+                format!(r#"{{"name":"{}","size":{},"datetime":{},"is_file":{}}}"#,
+                    f.name.replace('\\', "\\\\").replace('"', "\\\""),
+                    f.size, f.datetime, f.is_file)
+            }).collect();
+            put_string(env, &map, "files", &format!("[{}]", files_json.join(",")));
+            "file_list_received"
+        }
+        Event::CommandError { error_id, message } => {
+            put_int(env, &map, "error_id", *error_id as i32);
+            put_string(env, &map, "message", message);
+            "command_error"
+        }
+        Event::ChannelPermissionsUpdated { channel_id, permission_hints } => {
+            put_long(env, &map, "channel_id", *channel_id as i64);
+            put_long(env, &map, "permission_hints", *permission_hints as i64);
+            "channel_permissions_updated"
         }
     };
 

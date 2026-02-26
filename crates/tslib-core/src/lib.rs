@@ -42,10 +42,10 @@ pub mod identity;
 pub mod state;
 
 // Re-exports
-pub use client::Client;
+pub use client::{Client, FileEntry};
 pub use config::ClientConfig;
 pub use connection::{Connection, ConnectionState};
 pub use error::{Error, Result};
-pub use events::{Event, EventHandler};
+pub use events::{AudioCodec, Event, EventHandler};
 pub use identity::Identity;
 pub use state::{Channel, ServerState, User};

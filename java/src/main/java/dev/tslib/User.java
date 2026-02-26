@@ -28,6 +28,7 @@ public class User {
     public final String version;
     public final String country;
     public final String description;
+    public final String avatarId;
     public final long iconId;
 
     public User(int id, String uid, long databaseId, long channelId,
@@ -39,7 +40,8 @@ public class User {
                 boolean isTalker, int talkPower, String awayMessage,
                 long[] serverGroups, long channelGroup,
                 String platform, String version,
-                String country, String description, long iconId) {
+                String country, String description,
+                String avatarId, long iconId) {
         this.id = id;
         this.uid = uid;
         this.databaseId = databaseId;
@@ -64,6 +66,7 @@ public class User {
         this.version = version;
         this.country = country;
         this.description = description;
+        this.avatarId = avatarId;
         this.iconId = iconId;
     }
 

@@ -132,6 +132,10 @@ pub struct Channel {
     pub icon_id: i64,
     /// Is channel subscribed
     pub is_subscribed: bool,
+    /// Permission hints bitflags (from ChannelPermissionHint)
+    /// FILE_UPLOAD=64, FILE_DOWNLOAD=128, FILE_DELETE=256,
+    /// FILE_RENAME=512, FILE_BROWSE=1024, FILE_DIRECTORY_CREATE=2048
+    pub permission_hints: u64,
 }
 
 impl Channel {

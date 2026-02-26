@@ -43,21 +43,57 @@ public class ChannelTree implements AutoCloseable {
     }
 
     /**
-     * Get root channels (those with no parent).
+     * Sort a list of channel IDs according to the TS3 linked-list order field.
+     * Each channel's {@code order} is the ID of the channel it comes after (0 = first).
+     */
+    private List<Long> sortByOrder(List<Long> ids) {
+        if (ids == null || ids.size() <= 1) return ids;
+
+        // Build afterId → channelId map
+        Map<Long, Long> afterMap = new HashMap<>();
+        for (Long id : ids) {
+            Channel ch = channels.get(id);
+            if (ch != null) {
+                afterMap.put((long) ch.order, id);
+            }
+        }
+
+        List<Long> sorted = new ArrayList<>(ids.size());
+        // Start from the channel that comes after 0 (first in the list)
+        Long current = afterMap.get(0L);
+        while (current != null && sorted.size() < ids.size()) {
+            sorted.add(current);
+            current = afterMap.get(current);
+        }
+
+        // Append any orphans not reached by the chain
+        if (sorted.size() < ids.size()) {
+            for (Long id : ids) {
+                if (!sorted.contains(id)) {
+                    sorted.add(id);
+                }
+            }
+        }
+
+        return sorted;
+    }
+
+    /**
+     * Get root channels (those with no parent), sorted by order.
      */
     public Channel[] getRoots() {
-        return roots.stream()
+        return sortByOrder(roots).stream()
                 .map(channels::get)
                 .toArray(Channel[]::new);
     }
 
     /**
-     * Get the children of a channel.
+     * Get the children of a channel, sorted by order.
      */
     public Channel[] getChildren(long parentId) {
         List<Long> ids = children.get(parentId);
         if (ids == null) return new Channel[0];
-        return ids.stream()
+        return sortByOrder(ids).stream()
                 .map(channels::get)
                 .toArray(Channel[]::new);
     }

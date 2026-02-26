@@ -227,6 +227,7 @@ impl ChannelBuilder {
             needed_talk_power: 0,
             icon_id: 0,
             is_subscribed: false,
+            permission_hints: 0,
         })
     }
 }

@@ -102,6 +102,43 @@ pub enum Event {
         codec: AudioCodec,
         data: Vec<u8>,
     },
+
+    // File transfer events
+    /// A file download completed successfully
+    FileDownloaded {
+        channel_id: u64,
+        path: String,
+        data: Vec<u8>,
+    },
+    /// A file upload completed successfully
+    FileUploaded {
+        channel_id: u64,
+        path: String,
+    },
+    /// A file transfer failed
+    FileTransferFailed {
+        path: String,
+        error: String,
+    },
+
+    /// A server command returned an error (e.g. permission denied)
+    CommandError {
+        error_id: u32,
+        message: String,
+    },
+
+    /// File list received for a channel directory
+    FileListReceived {
+        channel_id: u64,
+        path: String,
+        files: Vec<crate::client::FileEntry>,
+    },
+
+    /// Channel permissions updated (from permoverview query)
+    ChannelPermissionsUpdated {
+        channel_id: u64,
+        permission_hints: u64,
+    },
 }
 
 /// Message target type
