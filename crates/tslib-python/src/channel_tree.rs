@@ -32,6 +32,7 @@ fn py_channel_to_core(c: &PyChannel) -> tslib_core::state::Channel {
         needed_talk_power: c.needed_talk_power,
         icon_id: c.icon_id,
         is_subscribed: c.is_subscribed,
+        permission_hints: 0,
     }
 }
 

@@ -36,6 +36,7 @@ fn make_channel(id: u64, parent_id: u64, name: &str, order: i32) -> Channel {
         needed_talk_power: 0,
         icon_id: 0,
         is_subscribed: true,
+        permission_hints: 0,
     }
 }
 

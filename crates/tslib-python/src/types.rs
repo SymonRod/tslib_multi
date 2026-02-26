@@ -330,6 +330,27 @@ pub fn event_to_dict<'py>(py: Python<'py>, event: &tslib_core::events::Event) ->
             let _ = dict.set_item("path", path.as_str());
             let _ = dict.set_item("error", error.as_str());
         }
+        Event::FileUploaded { channel_id, path } => {
+            let _ = dict.set_item("type", "file_uploaded");
+            let _ = dict.set_item("channel_id", channel_id);
+            let _ = dict.set_item("path", path.as_str());
+        }
+        Event::CommandError { error_id, message } => {
+            let _ = dict.set_item("type", "command_error");
+            let _ = dict.set_item("error_id", error_id);
+            let _ = dict.set_item("message", message.as_str());
+        }
+        Event::FileListReceived { channel_id, path, files } => {
+            let _ = dict.set_item("type", "file_list_received");
+            let _ = dict.set_item("channel_id", channel_id);
+            let _ = dict.set_item("path", path.as_str());
+            let _ = dict.set_item("file_count", files.len());
+        }
+        Event::ChannelPermissionsUpdated { channel_id, permission_hints } => {
+            let _ = dict.set_item("type", "channel_permissions_updated");
+            let _ = dict.set_item("channel_id", channel_id);
+            let _ = dict.set_item("permission_hints", permission_hints);
+        }
     }
 
     dict
