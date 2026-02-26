@@ -28,7 +28,7 @@ Bibliothèque modulaire et cross-platform pour créer des clients TeamSpeak 3/6 
 - Icône serveur (récupération de l'icon_id)
 - Framework bot avec préfixes de commandes
 - Bindings natifs : C (FFI), Python (PyO3), Java/Android (JNI)
-- 71 tests d'intégration (48 offline + 23 online)
+- 242 tests unitaires et d'intégration
 
 ## Compilation
 
@@ -234,7 +234,7 @@ tslib/
 │   ├── simple-bot/
 │   ├── voice-client/
 │   ├── send-msg/
-│   └── test-suite/       # 71 tests
+│   └── test-suite/       # Tests d'intégration
 ├── build_android.sh      # Script cross-compilation Android
 └── Cargo.toml            # Workspace
 ```
