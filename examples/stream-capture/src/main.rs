@@ -191,6 +191,23 @@ async fn main() -> Result<()> {
 	info!(server = %args.server, "Connecting");
 	let mut con = options.connect()?;
 
+	// `connect()` returns while the connection is still in its `Connecting`
+	// state machine state — the real handshake plays out over `con.events()`.
+	// `get_tsproto_client_mut()` needs `ConnectionState::Connected`, which is
+	// only reached once the initial state sync (`StreamItem::BookEvents`)
+	// arrives; calling it any earlier fails with `Error::NotConnected`. Same
+	// wait as `tslib-core`'s `Client::do_connect` (`crates/tslib-core/src/client.rs:262`).
+	loop {
+		match tokio::time::timeout(Duration::from_secs(10), con.events().next()).await {
+			Ok(Some(Ok(StreamItem::BookEvents(_)))) => break,
+			Ok(Some(Ok(_))) => continue,
+			Ok(Some(Err(error))) => return Err(error.into()),
+			Ok(None) => anyhow::bail!("connection closed before initserver"),
+			Err(_) => anyhow::bail!("timeout waiting for initserver"),
+		}
+	}
+	info!("Handshake complete");
+
 	// The hook. `Event::ReceivePacket` fires once per reassembled command,
 	// after decryption and decompression and before `InMessage::new` — so
 	// unknown commands arrive here with their arguments intact.

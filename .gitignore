@@ -26,6 +26,10 @@ identity.json
 # Logs
 *.log
 
+# Screen-share research captures (real IPs, account tokens — see
+# TS6_Droid/docs/screenshare-phase2-plan.md)
+/captures/
+
 # OS
 .DS_Store
 Thumbs.db
