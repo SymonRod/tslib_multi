@@ -154,6 +154,15 @@ impl Bot {
             }
 
             tokio::select! {
+                // Pompa gli eventi dalla connessione: senza questa chiamata
+                // la broadcast queue non riceve mai i messaggi dal server.
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(20)) => {
+                    if let Some(client) = self.client.as_mut() {
+                        if let Err(e) = client.process_events().await {
+                            debug!("process_events: {}", e);
+                        }
+                    }
+                }
                 event = events.recv() => {
                     match event {
                         Ok(Event::TextMessage { sender_id, sender_name, message, target }) => {
