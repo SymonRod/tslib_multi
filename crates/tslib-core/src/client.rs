@@ -612,7 +612,8 @@ impl Client {
             PropertyId::ClientAwayMessage(client_id) |
             PropertyId::ClientTalkPower(client_id) |
             PropertyId::ClientTalkPowerGranted(client_id) |
-            PropertyId::ClientIsRecording(client_id) => {
+            PropertyId::ClientIsRecording(client_id) |
+            PropertyId::ClientIsStreaming(client_id) => {
                 // Client property changed - update our state
                 if let Some(ts_client) = state.clients.get(client_id) {
                     let user = ts_client_to_user(ts_client);
@@ -1306,6 +1307,8 @@ fn ts_client_to_user(client: &TsClient) -> User {
         is_away: client.away_message.is_some(),
         away_message: client.away_message.clone(),
         is_recording: client.is_recording,
+        // `None` on TeamSpeak 3 servers, which never send client_is_streaming
+        is_streaming: client.is_streaming.unwrap_or(false),
         is_priority_speaker: client.is_priority_speaker,
         is_channel_commander: client.is_channel_commander,
         talk_power: client.talk_power,

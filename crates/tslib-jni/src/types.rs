@@ -73,7 +73,7 @@ pub fn create_java_user<'a>(env: &mut JNIEnv<'a>, user: &User) -> JObject<'a> {
 
     env.new_object(
         "dev/tslib/User",
-        "(ILjava/lang/String;JJLjava/lang/String;BZZZZZZZZZZILjava/lang/String;[JJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)V",
+        "(ILjava/lang/String;JJLjava/lang/String;BZZZZZZZZZZZILjava/lang/String;[JJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)V",
         &[
             JValue::Int(user.id as i32),
             JValue::Object(&JObject::from(uid)),
@@ -88,6 +88,7 @@ pub fn create_java_user<'a>(env: &mut JNIEnv<'a>, user: &User) -> JObject<'a> {
             JValue::Bool(user.has_output_hardware as u8),
             JValue::Bool(user.is_away as u8),
             JValue::Bool(user.is_recording as u8),
+            JValue::Bool(user.is_streaming as u8),
             JValue::Bool(user.is_priority_speaker as u8),
             JValue::Bool(user.is_channel_commander as u8),
             JValue::Bool(user.is_talker as u8),

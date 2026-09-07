@@ -36,10 +36,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # TeamSpeak protocol (tsclientlib)
-tsclientlib = { git = "https://github.com/ReSpeak/tsclientlib.git" }
-tsproto = { git = "https://github.com/ReSpeak/tsclientlib.git" }
-tsproto-packets = { git = "https://github.com/ReSpeak/tsclientlib.git" }
-tsproto-types = { git = "https://github.com/ReSpeak/tsclientlib.git" }
+# Fork of ReSpeak/tsclientlib: adds the TeamSpeak 6 `client_is_streaming`
+# declaration, which upstream drops as an unknown argument. The declarations
+# submodule points at SymonRod/tsdeclarations on the same branch.
+tsclientlib = { git = "https://github.com/SymonRod/tsclientlib.git", branch = "ts6-client-is-streaming" }
+tsproto = { git = "https://github.com/SymonRod/tsclientlib.git", branch = "ts6-client-is-streaming" }
+tsproto-packets = { git = "https://github.com/SymonRod/tsclientlib.git", branch = "ts6-client-is-streaming" }
+tsproto-types = { git = "https://github.com/SymonRod/tsclientlib.git", branch = "ts6-client-is-streaming" }
 
 # Audio
 opus = "0.3"

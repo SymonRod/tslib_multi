@@ -193,6 +193,8 @@ pub struct User {
     pub away_message: Option<String>,
     /// Is recording
     pub is_recording: bool,
+    /// Is sharing its screen (TeamSpeak 6 only, `false` on TeamSpeak 3 servers)
+    pub is_streaming: bool,
     /// Is priority speaker
     pub is_priority_speaker: bool,
     /// Is channel commander
