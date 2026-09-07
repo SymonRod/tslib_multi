@@ -2,6 +2,7 @@ use jni::objects::{JObject, JValue};
 use jni::JNIEnv;
 
 use tslib_core::state::{Channel, ServerInfo, User};
+use tslib_core::streams::Stream;
 
 /// Create a Java `dev.tslib.Channel` object from a Rust `Channel`.
 pub fn create_java_channel<'a>(env: &mut JNIEnv<'a>, ch: &Channel) -> JObject<'a> {
@@ -135,6 +136,71 @@ pub fn create_java_server_info<'a>(env: &mut JNIEnv<'a>, info: &ServerInfo) -> J
     .unwrap_or_else(|_| JObject::null())
 }
 
+/// Create a Java `dev.tslib.Stream` object from a Rust `Stream`.
+///
+/// Metadata the server has not sent yet stays `null` rather than defaulting:
+/// a stream is announced before its details are known.
+pub fn create_java_stream<'a>(env: &mut JNIEnv<'a>, stream: &Stream) -> JObject<'a> {
+    let id = env.new_string(&stream.id).unwrap();
+    let name = match &stream.name {
+        Some(n) => JObject::from(env.new_string(n).unwrap()),
+        None => JObject::null(),
+    };
+    let boxed_int = |env: &mut JNIEnv<'a>, value: Option<u32>| match value {
+        Some(v) => env
+            .new_object("java/lang/Integer", "(I)V", &[JValue::Int(v as i32)])
+            .unwrap_or_else(|_| JObject::null()),
+        None => JObject::null(),
+    };
+    let stream_type = boxed_int(env, stream.stream_type);
+    let access = boxed_int(env, stream.access);
+    let mode = boxed_int(env, stream.mode);
+    let bitrate = boxed_int(env, stream.bitrate);
+    let viewer_limit = boxed_int(env, stream.viewer_limit);
+    let viewer_count = boxed_int(env, stream.viewer_count);
+    let audio = match stream.audio {
+        Some(v) => env
+            .new_object("java/lang/Boolean", "(Z)V", &[JValue::Bool(v as u8)])
+            .unwrap_or_else(|_| JObject::null()),
+        None => JObject::null(),
+    };
+
+    env.new_object(
+        "dev/tslib/Stream",
+        "(ILjava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Boolean;)V",
+        &[
+            JValue::Int(stream.owner_id as i32),
+            JValue::Object(&JObject::from(id)),
+            JValue::Object(&name),
+            JValue::Object(&stream_type),
+            JValue::Object(&access),
+            JValue::Object(&mode),
+            JValue::Object(&bitrate),
+            JValue::Object(&viewer_limit),
+            JValue::Object(&viewer_count),
+            JValue::Object(&audio),
+        ],
+    )
+    .unwrap_or_else(|_| JObject::null())
+}
+
+/// Create a `dev.tslib.Stream[]` from a stream snapshot.
+pub fn create_java_stream_array<'a>(env: &mut JNIEnv<'a>, streams: &[Stream]) -> JObject<'a> {
+    let class = match env.find_class("dev/tslib/Stream") {
+        Ok(c) => c,
+        Err(_) => return JObject::null(),
+    };
+    let array = match env.new_object_array(streams.len() as i32, &class, &JObject::null()) {
+        Ok(a) => a,
+        Err(_) => return JObject::null(),
+    };
+    for (i, stream) in streams.iter().enumerate() {
+        let obj = create_java_stream(env, stream);
+        let _ = env.set_object_array_element(&array, i as i32, &obj);
+    }
+    unsafe { JObject::from_raw(array.into_raw()) }
+}
+
 /// Create a Java `dev.tslib.Event` from a Rust `Event`.
 pub fn create_java_event<'a>(
     env: &mut JNIEnv<'a>,
@@ -184,9 +250,41 @@ pub fn create_java_event<'a>(
         );
     };
 
+    let put_object = |env: &mut JNIEnv<'a>, map: &JObject<'a>, key: &str, val: &JObject<'a>| {
+        let k = env.new_string(key).unwrap();
+        let _ = env.call_method(
+            map,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            &[JValue::Object(&JObject::from(k)), JValue::Object(val)],
+        );
+    };
+
     let event_type = match event {
-        // Metadata access and typed stream payloads are added in the JNI increment.
-        Event::StreamsChanged { .. } => "streams_changed",
+        Event::StreamsChanged { streams } => {
+            let array = create_java_stream_array(env, streams);
+            put_object(env, &map, "streams", &array);
+            "streams_changed"
+        }
+        Event::StreamJoinResponse { owner_id, stream_id, decision, message, offer } => {
+            put_int(env, &map, "owner_id", *owner_id as i32);
+            put_string(env, &map, "stream_id", stream_id);
+            put_int(env, &map, "decision", *decision as i32);
+            if let Some(msg) = message {
+                put_string(env, &map, "message", msg);
+            }
+            // The offer is an SDP: forwarded, never logged.
+            if let Some(offer) = offer {
+                put_string(env, &map, "offer", offer);
+            }
+            "stream_join_response"
+        }
+        Event::StreamSignaling { owner_id, stream_id, json } => {
+            put_int(env, &map, "owner_id", *owner_id as i32);
+            put_string(env, &map, "stream_id", stream_id);
+            put_string(env, &map, "json", json);
+            "stream_signaling"
+        }
         Event::Connected { server_name, welcome_message } => {
             put_string(env, &map, "server_name", server_name);
             if let Some(msg) = welcome_message {

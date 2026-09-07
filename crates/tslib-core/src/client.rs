@@ -19,6 +19,7 @@ use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tsclientlib::prelude::*;
 use tsclientlib::{Connection as TsConnection, DisconnectOptions, InMessage, Reason, StreamItem, ClientId, ChannelId};
+use tsclientlib::messages::c2s;
 use tsclientlib::MessageTarget as TsMessageTarget;
 use tsclientlib::data::{Client as TsClient, Channel as TsChannel};
 use tsclientlib::events::{Event as TsEvent, PropertyId};
@@ -760,6 +761,41 @@ impl Client {
             };
         }
         match msg {
+            InMessage::RespondJoinStreamRequest(ref response) => {
+                let mut event = None;
+                for part in response.iter() {
+                    let evt = Event::StreamJoinResponse {
+                        owner_id: part.client_id.0,
+                        stream_id: part.stream_id.clone(),
+                        decision: part.decision,
+                        message: part.message.clone(),
+                        offer: part.offer.clone(),
+                    };
+                    // Never log the offer: it carries SDP and ICE candidates.
+                    log::info!(
+                        "Join stream response from {}: decision={}, offer={}",
+                        part.client_id.0,
+                        part.decision,
+                        part.offer.is_some()
+                    );
+                    let _ = self.event_tx.send(evt.clone());
+                    event = Some(evt);
+                }
+                event
+            }
+            InMessage::StreamSignaling(ref signaling) => {
+                let mut event = None;
+                for part in signaling.iter() {
+                    let evt = Event::StreamSignaling {
+                        owner_id: part.client_id.0,
+                        stream_id: part.stream_id.clone(),
+                        json: part.json.clone(),
+                    };
+                    let _ = self.event_tx.send(evt.clone());
+                    event = Some(evt);
+                }
+                event
+            }
             InMessage::FileList(file_list) => {
                 let count = file_list.iter().count();
                 log::info!("Received FileList with {} entries", count);
@@ -1223,6 +1259,76 @@ impl Client {
 
     fn clear_streams(&mut self) -> Option<Event> {
         self.streams.clear().then(|| self.streams_changed())
+    }
+
+    /// Ask a sharer to let us view one of its streams.
+    ///
+    /// The sharer's client decides, and may never answer: the reply arrives as
+    /// [`Event::StreamJoinResponse`], so callers need their own timeout.
+    pub fn join_stream(&mut self, owner_id: u16, stream_id: &str) -> Result<()> {
+        self.send_join_stream_request(owner_id, stream_id, false)
+    }
+
+    /// Stop viewing a stream. No reply is expected.
+    pub fn leave_stream(&mut self, owner_id: u16, stream_id: &str) -> Result<()> {
+        self.send_join_stream_request(owner_id, stream_id, true)
+    }
+
+    fn send_join_stream_request(
+        &mut self,
+        owner_id: u16,
+        stream_id: &str,
+        is_remove: bool,
+    ) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        debug!("{} stream of client {}", if is_remove { "Leaving" } else { "Joining" }, owner_id);
+        // `msg` is required even when empty; omitting it is error 1542.
+        c2s::OutJoinStreamRequestPart {
+            stream_id: stream_id.into(),
+            client_id: ClientId(owner_id),
+            is_remove,
+            message: "".into(),
+        }
+        .send(con)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Relay a WebRTC signaling message to a sharer, verbatim.
+    ///
+    /// The server does not inspect the payload. Pace trickled candidates:
+    /// a burst trips flood protection (error 524).
+    pub fn send_stream_signaling(
+        &mut self,
+        owner_id: u16,
+        stream_id: &str,
+        json: &str,
+    ) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        c2s::OutStreamSignalingPart {
+            client_id: ClientId(owner_id),
+            stream_id: stream_id.into(),
+            json: json.into(),
+        }
+        .send(con)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Request metadata for a client's streams; the answer enriches the
+    /// registry and arrives as [`Event::StreamsChanged`].
+    ///
+    /// The server keys the answer by client, so `stream_id` is accepted but
+    /// ignored.
+    pub fn request_stream_info(&mut self, owner_id: u16, stream_id: Option<&str>) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        c2s::OutRequestStreamInfoPart {
+            client_id: ClientId(owner_id),
+            stream_id: stream_id.map(Into::into),
+        }
+        .send(con)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
     }
 
     /// Disconnect from the server

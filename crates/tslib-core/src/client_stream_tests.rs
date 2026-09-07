@@ -126,3 +126,75 @@ async fn explicit_disconnect_clears_once_and_ignores_queued_metadata() {
     assert!(client.clear_streams().is_none());
     assert!(receiver.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn join_response_carries_the_offer_and_reaches_subscribers() {
+    let mut client = client();
+    let mut receiver = client.subscribe();
+    let events = client
+        .process_stream_item(notification(
+            r"notifyrespondjoinstreamrequest clid=2 id=a msg decision=1 offer=v=0\r\na=x\r\n",
+        ))
+        .await;
+    assert_eq!(events.len(), 1);
+    let Event::StreamJoinResponse { owner_id, stream_id, decision, message, offer } = &events[0]
+    else {
+        panic!("Expected a join response, got {:?}", events[0]);
+    };
+    assert_eq!(*owner_id, 2);
+    assert_eq!(stream_id, "a");
+    assert_eq!(*decision, 1);
+    assert_eq!(message.as_deref(), Some(""));
+    // tsproto already unescaped the SDP: the app must not unescape it again.
+    assert_eq!(offer.as_deref(), Some("v=0\r\na=x\r\n"));
+    assert!(matches!(
+        receiver.try_recv().unwrap(),
+        Event::StreamJoinResponse { .. }
+    ));
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn a_refusal_has_no_offer() {
+    let mut client = client();
+    let events = client
+        .process_stream_item(notification(
+            "notifyrespondjoinstreamrequest clid=2 id=a decision=0",
+        ))
+        .await;
+    let Event::StreamJoinResponse { decision, offer, message, .. } = &events[0] else {
+        panic!("Expected a join response, got {:?}", events[0]);
+    };
+    assert_eq!(*decision, 0);
+    assert_eq!(*offer, None);
+    assert_eq!(*message, None);
+}
+
+#[tokio::test]
+async fn signaling_json_is_forwarded_untouched() {
+    let mut client = client();
+    let mut receiver = client.subscribe();
+    // Not valid JSON: the server relays without inspecting, so the app decides.
+    let events = client
+        .process_stream_item(notification("notifystreamsignaling clid=2 id=a json=not-json"))
+        .await;
+    let Event::StreamSignaling { owner_id, stream_id, json } = &events[0] else {
+        panic!("Expected signaling, got {:?}", events[0]);
+    };
+    assert_eq!(*owner_id, 2);
+    assert_eq!(stream_id, "a");
+    assert_eq!(json, "not-json");
+    assert!(matches!(
+        receiver.try_recv().unwrap(),
+        Event::StreamSignaling { .. }
+    ));
+}
+
+#[tokio::test]
+async fn viewer_commands_need_a_connection() {
+    let mut client = client();
+    assert!(client.join_stream(2, "a").is_err());
+    assert!(client.leave_stream(2, "a").is_err());
+    assert!(client.send_stream_signaling(2, "a", "{}").is_err());
+    assert!(client.request_stream_info(2, None).is_err());
+}

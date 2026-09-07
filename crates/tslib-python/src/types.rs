@@ -352,6 +352,18 @@ pub fn event_to_dict<'py>(py: Python<'py>, event: &tslib_core::events::Event) ->
             // The registry payload is currently exposed by the Rust API only.
             let _ = dict.set_item("type", "streams_changed");
         }
+        Event::StreamJoinResponse { owner_id, stream_id, decision, .. } => {
+            // The offer is an SDP: the Rust API exposes it, this binding does not.
+            let _ = dict.set_item("type", "stream_join_response");
+            let _ = dict.set_item("owner_id", owner_id);
+            let _ = dict.set_item("stream_id", stream_id.as_str());
+            let _ = dict.set_item("decision", decision);
+        }
+        Event::StreamSignaling { owner_id, stream_id, .. } => {
+            let _ = dict.set_item("type", "stream_signaling");
+            let _ = dict.set_item("owner_id", owner_id);
+            let _ = dict.set_item("stream_id", stream_id.as_str());
+        }
         Event::ChannelPermissionsUpdated { channel_id, permission_hints } => {
             let _ = dict.set_item("type", "channel_permissions_updated");
             let _ = dict.set_item("channel_id", channel_id);

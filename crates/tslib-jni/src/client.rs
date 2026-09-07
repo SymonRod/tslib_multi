@@ -3,7 +3,10 @@ use jni::sys::{jboolean, jint, jlong, jobject, jobjectArray};
 use jni::JNIEnv;
 
 use crate::error::{throw_tslib_exception, to_jni_result};
-use crate::types::{create_java_channel, create_java_event, create_java_server_info, create_java_user};
+use crate::types::{
+    create_java_channel, create_java_event, create_java_server_info, create_java_stream,
+    create_java_user,
+};
 use crate::{get_string, require_string};
 
 /// Internal handle that owns both the client and its tokio runtime.
@@ -346,6 +349,116 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetUsers(
         }
 
         array.into_raw()
+    })
+}
+
+/// `Client.getStreams()` — snapshot of the streams advertised on the server.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeGetStreams(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jobjectArray {
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetStreams", std::ptr::null_mut(), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        let streams = handle.client.streams();
+
+        let stream_class = match env.find_class("dev/tslib/Stream") {
+            Ok(c) => c,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        let array = match env.new_object_array(streams.len() as i32, &stream_class, &JObject::null()) {
+            Ok(a) => a,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        for (i, stream) in streams.iter().enumerate() {
+            let obj = create_java_stream(&mut env, stream);
+            let _ = env.set_object_array_element(&array, i as i32, &obj);
+        }
+        array.into_raw()
+    })
+}
+
+/// `Client.joinStream(ownerId, streamId)` — ask a sharer for its stream.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeJoinStream(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    owner_id: jint,
+    stream_id: JString,
+) {
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeJoinStream", (), |mut env| {
+        let stream_id = match require_string(&mut env, &stream_id) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        log::info!("nativeJoinStream: owner={}", owner_id);
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.join_stream(owner_id as u16, &stream_id));
+    })
+}
+
+/// `Client.leaveStream(ownerId, streamId)` — stop viewing a stream.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeLeaveStream(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    owner_id: jint,
+    stream_id: JString,
+) {
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeLeaveStream", (), |mut env| {
+        let stream_id = match require_string(&mut env, &stream_id) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        log::info!("nativeLeaveStream: owner={}", owner_id);
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.leave_stream(owner_id as u16, &stream_id));
+    })
+}
+
+/// `Client.sendStreamSignaling(ownerId, streamId, json)` — relay a WebRTC message.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeSendStreamSignaling(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    owner_id: jint,
+    stream_id: JString,
+    json: JString,
+) {
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeSendStreamSignaling", (), |mut env| {
+        let stream_id = match require_string(&mut env, &stream_id) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        // The payload carries SDP and ICE candidates, so it is never logged.
+        let json = match require_string(&mut env, &json) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(
+            &mut env,
+            handle.client.send_stream_signaling(owner_id as u16, &stream_id, &json),
+        );
+    })
+}
+
+/// `Client.requestStreamInfo(ownerId)` — ask for a client's stream metadata.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_Client_nativeRequestStreamInfo(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    owner_id: jint,
+) {
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeRequestStreamInfo", (), |mut env| {
+        log::info!("nativeRequestStreamInfo: owner={}", owner_id);
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.request_stream_info(owner_id as u16, None));
     })
 }
 

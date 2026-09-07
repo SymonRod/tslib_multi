@@ -29,6 +29,24 @@ pub enum Event {
     /// Empty after the last stream stops or the connection is lost.
     StreamsChanged { streams: Vec<crate::streams::Stream> },
 
+    /// A sharer answered a join request. `decision` is 1 for accepted, 0 for
+    /// refused; an accepted answer carries the WebRTC offer. A request can also
+    /// go unanswered, so callers need their own timeout.
+    StreamJoinResponse {
+        owner_id: u16,
+        stream_id: String,
+        decision: u32,
+        message: Option<String>,
+        offer: Option<String>,
+    },
+    /// A WebRTC signaling message relayed verbatim from the sharer. The server
+    /// does not inspect `json`, so parse it defensively.
+    StreamSignaling {
+        owner_id: u16,
+        stream_id: String,
+        json: String,
+    },
+
     // Channel events
     /// A new channel was created
     ChannelCreated { channel: Channel },
