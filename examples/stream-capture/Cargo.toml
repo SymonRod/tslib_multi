@@ -1,0 +1,25 @@
+[package]
+name = "stream-capture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Screen sharing protocol capture tool (Phase 2 research, see TS6_Droid/docs/screenshare-phase2-plan.md)"
+
+[[bin]]
+name = "stream-capture"
+path = "src/main.rs"
+
+[dependencies]
+tslib-core = { path = "../../crates/tslib-core" }
+
+tsclientlib = { workspace = true, features = ["unstable"] }
+tsproto.workspace = true
+tsproto-packets.workspace = true
+
+tokio = { version = "1.36", features = ["full"] }
+futures.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4.5", features = ["derive"] }

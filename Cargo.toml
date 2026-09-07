@@ -13,6 +13,7 @@ members = [
     "examples/voice-client",
     "examples/test-suite",
     "examples/send-msg",
+    "examples/stream-capture",
 ]
 
 [workspace.package]
