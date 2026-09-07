@@ -25,6 +25,10 @@ pub enum Event {
     /// Connection lost unexpectedly
     ConnectionLost { reason: String },
 
+    /// Available stream metadata changed. Contains the complete, sorted snapshot.
+    /// Empty after the last stream stops or the connection is lost.
+    StreamsChanged { streams: Vec<crate::streams::Stream> },
+
     // Channel events
     /// A new channel was created
     ChannelCreated { channel: Channel },

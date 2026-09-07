@@ -348,6 +348,10 @@ pub fn event_to_dict<'py>(py: Python<'py>, event: &tslib_core::events::Event) ->
             let _ = dict.set_item("path", path.as_str());
             let _ = dict.set_item("file_count", files.len());
         }
+        Event::StreamsChanged { .. } => {
+            // The registry payload is currently exposed by the Rust API only.
+            let _ = dict.set_item("type", "streams_changed");
+        }
         Event::ChannelPermissionsUpdated { channel_id, permission_hints } => {
             let _ = dict.set_item("type", "channel_permissions_updated");
             let _ = dict.set_item("channel_id", channel_id);

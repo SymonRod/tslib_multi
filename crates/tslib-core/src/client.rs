@@ -8,6 +8,7 @@ use crate::connection::ConnectionState;
 use crate::error::{ConnectionError, Error, Result};
 use crate::events::{AudioCodec, Event, EventHandler};
 use crate::state::{Channel, ServerState, User};
+use crate::streams::{Stream, StreamRegistry};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -24,6 +25,10 @@ use tsclientlib::events::{Event as TsEvent, PropertyId};
 use tsproto_types::{ChannelType as TsChannelType, ClientType as TsClientType, Codec as TsCodec};
 use tsproto_types::errors::Error as TsError;
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType};
+
+#[cfg(test)]
+#[path = "client_stream_tests.rs"]
+mod stream_tests;
 
 /// A file entry from a channel's file list
 #[derive(Debug, Clone)]
@@ -52,6 +57,7 @@ pub struct Client {
     state: ConnectionState,
     /// Server state (channels, users, etc.)
     server_state: ServerState,
+    streams: StreamRegistry,
     /// Event broadcaster
     event_tx: broadcast::Sender<Event>,
     /// Event handlers
@@ -92,6 +98,7 @@ impl Client {
             config: config.clone(),
             state: ConnectionState::Disconnected,
             server_state: ServerState::default(),
+            streams: StreamRegistry::default(),
             event_tx,
             handlers: Vec::new(),
             client_id: None,
@@ -196,6 +203,7 @@ impl Client {
         }
 
         if disconnected {
+            events.extend(self.clear_streams());
             self.state = ConnectionState::Disconnected;
             let event = Event::Disconnected {
                 reason: "Connection closed".to_string(),
@@ -251,20 +259,19 @@ impl Client {
     /// subscribes to all channels and synchronizes the server state
     /// (users, channels, etc.).
     pub async fn wait_connected(&mut self) -> Result<()> {
-        let con = self
-            .connection
-            .as_mut()
-            .ok_or(ConnectionError::NotConnected)?;
-
-        // Poll events one by one without filtering, so we don't
-        // discard non-BookEvents items (messages, audio, etc.)
+        // Preserve notifications received during the handshake as well.
         loop {
-            match con.events().next().await {
+            let item = self.connection.as_mut()
+                .ok_or(ConnectionError::NotConnected)?.events().next().await;
+            match item {
                 Some(Ok(item)) => {
-                    if matches!(item, StreamItem::BookEvents(_)) {
+                    let connected = matches!(item, StreamItem::BookEvents(_));
+                    for event in self.process_stream_item(item).await {
+                        self.dispatch_event(event).await;
+                    }
+                    if connected {
                         break;
                     }
-                    // Other events during connection setup are expected; just skip them
                 }
                 Some(Err(e)) => {
                     return Err(ConnectionError::ConnectFailed(e.to_string()).into());
@@ -337,9 +344,17 @@ impl Client {
     async fn process_stream_item(&mut self, item: StreamItem) -> Vec<Event> {
         match item {
             StreamItem::BookEvents(book_events) => {
+                if self.state == ConnectionState::Reconnecting {
+                    self.state = ConnectionState::Connected;
+                }
                 // Process book events (client/channel changes)
                 let mut events = Vec::new();
                 for event in book_events {
+                    if let TsEvent::PropertyRemoved { id: PropertyId::Client(id), .. } = &event {
+                        if self.streams.remove_owner(id.0) {
+                            events.push(self.streams_changed());
+                        }
+                    }
                     if let Some(evt) = self.process_book_event(event) {
                         // Send via broadcast channel
                         let _ = self.event_tx.send(evt.clone());
@@ -381,12 +396,14 @@ impl Client {
                 events
             }
             StreamItem::DisconnectedTemporarily(_reason) => {
+                let mut events: Vec<_> = self.clear_streams().into_iter().collect();
                 self.state = ConnectionState::Reconnecting;
                 let event = Event::ConnectionLost {
                     reason: "Temporary disconnect".to_string(),
                 };
                 let _ = self.event_tx.send(event.clone());
-                vec![event]
+                events.push(event);
+                events
             }
             StreamItem::MessageEvent(msg) => {
                 log::info!("StreamItem::MessageEvent: cmd={:?}", msg.get_command_name());
@@ -733,6 +750,15 @@ impl Client {
     /// not here. This handles remaining protocol messages like channellistfinished.
     fn process_message_event(&mut self, msg: InMessage) -> Option<Event> {
         log::info!("process_message_event: cmd={}", msg.get_command_name());
+        if matches!(&msg, InMessage::StreamStarted(_) | InMessage::StreamInfo(_)
+            | InMessage::StreamUpdated(_) | InMessage::StreamStopped(_)) {
+            // Ignore queued notifications while flushing an explicit disconnect.
+            return if self.state == ConnectionState::Connected && self.streams.apply(&msg) {
+                Some(self.streams_changed())
+            } else {
+                None
+            };
+        }
         match msg {
             InMessage::FileList(file_list) => {
                 let count = file_list.iter().count();
@@ -1181,6 +1207,24 @@ impl Client {
         self.event_tx.subscribe()
     }
 
+    /// Snapshot of advertised streams, sorted by owner ID and stream ID.
+    /// Poll `process_events` to keep this list current; no media is received.
+    pub fn streams(&self) -> Vec<Stream> {
+        self.streams.list()
+    }
+
+    fn streams_changed(&self) -> Event {
+        let streams = self.streams();
+        debug!("Stream registry changed: {} available", streams.len());
+        let event = Event::StreamsChanged { streams };
+        let _ = self.event_tx.send(event.clone());
+        event
+    }
+
+    fn clear_streams(&mut self) -> Option<Event> {
+        self.streams.clear().then(|| self.streams_changed())
+    }
+
     /// Disconnect from the server
     pub fn disconnect(&mut self) -> Result<()> {
         self.disconnect_with_reason("Goodbye")
@@ -1205,6 +1249,7 @@ impl Client {
 
         self.state = ConnectionState::Disconnected;
 
+        self.clear_streams();
         let _ = self.event_tx.send(Event::Disconnected {
             reason: "User requested".to_string(),
         });

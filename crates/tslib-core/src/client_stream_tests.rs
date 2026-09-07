@@ -1,0 +1,128 @@
+use super::*;
+use tsclientlib::events::{ExtraInfo, PropertyValue};
+use tsproto_packets::packets::OutPacket;
+
+fn client() -> Client {
+    let config = ClientConfig::builder()
+        .address("localhost:9987")
+        .identity(crate::Identity::create().unwrap())
+        .build()
+        .unwrap();
+    let mut client = Client::connect(config).unwrap();
+    // The connection has not been polled: these tests never open a session.
+    client.connection = None;
+    client
+}
+
+fn notification(raw: &str) -> StreamItem {
+    let header = OutPacket::new_with_dir(Direction::S2C, Flags::empty(), PacketType::Command);
+    StreamItem::MessageEvent(InMessage::new(&header.header(), raw.as_bytes()).unwrap())
+}
+
+fn snapshot(event: &Event) -> &[Stream] {
+    match event {
+        Event::StreamsChanged { streams } => streams,
+        _ => panic!("Expected stream snapshot, got {event:?}"),
+    }
+}
+
+#[tokio::test]
+async fn notifications_return_and_broadcast_one_complete_snapshot() {
+    let mut client = client();
+    let mut receiver = client.subscribe();
+    for raw in [
+        "notifystreamstarted clid=2 id=a name=First audio=1",
+        "notifystreaminfo clid=2 id=a viewer=3|id=b name=Second",
+        "notifystreamupdated clid=2 id=a name=Renamed",
+        "notifystreamstopped clid=2 id=a",
+    ] {
+        let events = client.process_stream_item(notification(raw)).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(snapshot(&events[0]), client.streams());
+        assert_eq!(snapshot(&receiver.try_recv().unwrap()), client.streams());
+        assert!(receiver.try_recv().is_err());
+        assert!(client
+            .process_stream_item(notification(raw))
+            .await
+            .is_empty());
+        assert!(receiver.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn owner_removal_cleans_all_streams_even_without_cached_user() {
+    let mut client = client();
+    client
+        .process_stream_item(notification(
+            "notifystreamstarted clid=2 id=a|id=b|clid=3 id=a",
+        ))
+        .await;
+    assert!(client.server_state.users.is_empty());
+    let mut receiver = client.subscribe();
+    let events = client
+        .process_stream_item(StreamItem::BookEvents(vec![TsEvent::PropertyRemoved {
+            id: PropertyId::Client(ClientId(2)),
+            // The cleanup uses the key, not the removed book value.
+            old: PropertyValue::String(String::new()),
+            invoker: None,
+            extra: ExtraInfo::default(),
+        }]))
+        .await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(snapshot(&events[0]).len(), 1);
+    assert_eq!(snapshot(&events[0])[0].owner_id, 3);
+    assert_eq!(snapshot(&receiver.try_recv().unwrap()), client.streams());
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn temporary_disconnect_clears_registry_and_reconnect_accepts_streams() {
+    let mut client = client();
+    client
+        .process_stream_item(notification("notifystreamstarted clid=2 id=a"))
+        .await;
+    let mut receiver = client.subscribe();
+    let events = client
+        .process_stream_item(StreamItem::DisconnectedTemporarily(
+            tsclientlib::TemporaryDisconnectReason::Serverstop,
+        ))
+        .await;
+    assert_eq!(events.len(), 2);
+    assert!(snapshot(&events[0]).is_empty());
+    assert!(snapshot(&receiver.try_recv().unwrap()).is_empty());
+    assert!(matches!(
+        receiver.try_recv().unwrap(),
+        Event::ConnectionLost { .. }
+    ));
+    assert!(receiver.try_recv().is_err());
+    assert!(client.streams().is_empty());
+    client
+        .process_stream_item(StreamItem::BookEvents(Vec::new()))
+        .await;
+    let events = client
+        .process_stream_item(notification("notifystreamstarted clid=2 id=b"))
+        .await;
+    assert_eq!(snapshot(&events[0])[0].id, "b");
+}
+
+#[tokio::test]
+async fn explicit_disconnect_clears_once_and_ignores_queued_metadata() {
+    let mut client = client();
+    client
+        .process_stream_item(notification("notifystreamstarted clid=2 id=a"))
+        .await;
+    let mut receiver = client.subscribe();
+    client.disconnect().unwrap();
+    assert!(client.streams().is_empty());
+    assert!(snapshot(&receiver.try_recv().unwrap()).is_empty());
+    assert!(matches!(
+        receiver.try_recv().unwrap(),
+        Event::Disconnected { .. }
+    ));
+    assert!(client
+        .process_stream_item(notification("notifystreaminfo clid=2 id=a"))
+        .await
+        .is_empty());
+    assert!(client.clear_streams().is_none());
+    assert!(receiver.try_recv().is_err());
+}

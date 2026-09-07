@@ -185,6 +185,8 @@ pub fn create_java_event<'a>(
     };
 
     let event_type = match event {
+        // Metadata access and typed stream payloads are added in the JNI increment.
+        Event::StreamsChanged { .. } => "streams_changed",
         Event::Connected { server_name, welcome_message } => {
             put_string(env, &map, "server_name", server_name);
             if let Some(msg) = welcome_message {
