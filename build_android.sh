@@ -32,5 +32,17 @@ cargo ndk \
     -o "${OUTPUT_DIR}" \
     build ${PROFILE} -p tslib-jni --features vendored-openssl -j10
 
+# Keep an unstripped copy for symbolizing native crashes (ndk-stack /
+# llvm-symbolizer), then strip the ones that go into the APK.
+SYMBOLS_DIR="${SCRIPT_DIR}/symbols"
+STRIP="$(find "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt" -name 'llvm-strip' | head -1)"
+for so in $(find "${OUTPUT_DIR}" -name '*.so' -type f); do
+    abi="$(basename "$(dirname "${so}")")"
+    mkdir -p "${SYMBOLS_DIR}/${abi}"
+    cp "${so}" "${SYMBOLS_DIR}/${abi}/"
+    "${STRIP}" --strip-unneeded "${so}"
+done
+echo "Unstripped copies kept in ${SYMBOLS_DIR} (use with ndk-stack)."
+
 echo "Done. Libraries:"
 find "${OUTPUT_DIR}" -name "*.so" -type f -exec ls -lh {} \; 2>/dev/null || echo "(no .so files found)"

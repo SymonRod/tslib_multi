@@ -19,24 +19,28 @@ pub extern "system" fn Java_dev_tslib_Identity_nativeCreate(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jlong {
-    match to_jni_result(&mut env, tslib_core::Identity::create()) {
-        Some(id) => identity_to_ptr(id),
-        None => 0,
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeCreate", 0, |mut env| {
+        match to_jni_result(&mut env, tslib_core::Identity::create()) {
+            Some(id) => identity_to_ptr(id),
+            None => 0,
+        }
+    })
 }
 
 /// `Identity.nativeDestroy(ptr)` — free memory.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_tslib_Identity_nativeDestroy(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) {
-    if ptr != 0 {
-        unsafe {
-            drop(Box::from_raw(ptr as *mut tslib_core::Identity));
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeDestroy", (), |_env| {
+        if ptr != 0 {
+            unsafe {
+                drop(Box::from_raw(ptr as *mut tslib_core::Identity));
+            }
         }
-    }
+    })
 }
 
 /// `Identity.load(path)` — load from file.
@@ -46,14 +50,16 @@ pub extern "system" fn Java_dev_tslib_Identity_nativeLoad(
     _class: JClass,
     path: JString,
 ) -> jlong {
-    let path = match require_string(&mut env, &path) {
-        Ok(s) => s,
-        Err(()) => return 0,
-    };
-    match to_jni_result(&mut env, tslib_core::Identity::load(&path)) {
-        Some(id) => identity_to_ptr(id),
-        None => 0,
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeLoad", 0, |mut env| {
+        let path = match require_string(&mut env, &path) {
+            Ok(s) => s,
+            Err(()) => return 0,
+        };
+        match to_jni_result(&mut env, tslib_core::Identity::load(&path)) {
+            Some(id) => identity_to_ptr(id),
+            None => 0,
+        }
+    })
 }
 
 /// `Identity.save(path)`
@@ -64,12 +70,14 @@ pub extern "system" fn Java_dev_tslib_Identity_nativeSave(
     ptr: jlong,
     path: JString,
 ) {
-    let path = match require_string(&mut env, &path) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let id = ptr_to_identity(ptr);
-    to_jni_result(&mut env, id.save(&path));
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeSave", (), |mut env| {
+        let path = match require_string(&mut env, &path) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let id = ptr_to_identity(ptr);
+        to_jni_result(&mut env, id.save(&path));
+    })
 }
 
 /// `Identity.fromString(data)`
@@ -79,14 +87,16 @@ pub extern "system" fn Java_dev_tslib_Identity_nativeFromString(
     _class: JClass,
     data: JString,
 ) -> jlong {
-    let data = match require_string(&mut env, &data) {
-        Ok(s) => s,
-        Err(()) => return 0,
-    };
-    match to_jni_result(&mut env, tslib_core::Identity::from_string(&data)) {
-        Some(id) => identity_to_ptr(id),
-        None => 0,
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeFromString", 0, |mut env| {
+        let data = match require_string(&mut env, &data) {
+            Ok(s) => s,
+            Err(()) => return 0,
+        };
+        match to_jni_result(&mut env, tslib_core::Identity::from_string(&data)) {
+            Some(id) => identity_to_ptr(id),
+            None => 0,
+        }
+    })
 }
 
 /// `Identity.exportString()`
@@ -96,56 +106,64 @@ pub extern "system" fn Java_dev_tslib_Identity_nativeExportString(
     _class: JClass,
     ptr: jlong,
 ) -> jstring {
-    let id = ptr_to_identity(ptr);
-    match to_jni_result(&mut env, id.export_string()) {
-        Some(s) => env
-            .new_string(&s)
-            .map(|js| js.into_raw())
-            .unwrap_or(std::ptr::null_mut()),
-        None => std::ptr::null_mut(),
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeExportString", std::ptr::null_mut(), |mut env| {
+        let id = ptr_to_identity(ptr);
+        match to_jni_result(&mut env, id.export_string()) {
+            Some(s) => env
+                .new_string(&s)
+                .map(|js| js.into_raw())
+                .unwrap_or(std::ptr::null_mut()),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// `Identity.getUniqueId()`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_tslib_Identity_nativeGetUniqueId(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) -> jstring {
-    let id = ptr_to_identity(ptr);
-    let uid = id.unique_id();
-    env.new_string(&uid)
-        .map(|js| js.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeGetUniqueId", std::ptr::null_mut(), |env| {
+        let id = ptr_to_identity(ptr);
+        let uid = id.unique_id();
+        env.new_string(&uid)
+            .map(|js| js.into_raw())
+            .unwrap_or(std::ptr::null_mut())
+    })
 }
 
 /// `Identity.getSecurityLevel()`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_tslib_Identity_nativeGetSecurityLevel(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) -> jint {
-    let id = ptr_to_identity(ptr);
-    id.security_level() as jint
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeGetSecurityLevel", 0, |_env| {
+        let id = ptr_to_identity(ptr);
+        id.security_level() as jint
+    })
 }
 
 /// `Identity.getNickname()`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_tslib_Identity_nativeGetNickname(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) -> jstring {
-    let id = ptr_to_identity(ptr);
-    match id.nickname() {
-        Some(n) => env
-            .new_string(n)
-            .map(|js| js.into_raw())
-            .unwrap_or(std::ptr::null_mut()),
-        None => std::ptr::null_mut(),
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeGetNickname", std::ptr::null_mut(), |env| {
+        let id = ptr_to_identity(ptr);
+        match id.nickname() {
+            Some(n) => env
+                .new_string(n)
+                .map(|js| js.into_raw())
+                .unwrap_or(std::ptr::null_mut()),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// `Identity.setNickname(name)`
@@ -156,12 +174,14 @@ pub extern "system" fn Java_dev_tslib_Identity_nativeSetNickname(
     ptr: jlong,
     name: JString,
 ) {
-    let name = match require_string(&mut env, &name) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let id = ptr_to_identity(ptr);
-    id.set_nickname(name);
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeSetNickname", (), |mut env| {
+        let name = match require_string(&mut env, &name) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let id = ptr_to_identity(ptr);
+        id.set_nickname(name);
+    })
 }
 
 /// `Identity.improve(targetLevel)`
@@ -172,6 +192,8 @@ pub extern "system" fn Java_dev_tslib_Identity_nativeImprove(
     ptr: jlong,
     target_level: jint,
 ) {
-    let id = ptr_to_identity(ptr);
-    to_jni_result(&mut env, id.improve(target_level as u8));
+    crate::error::guard(&mut env, "Java_dev_tslib_Identity_nativeImprove", (), |mut env| {
+        let id = ptr_to_identity(ptr);
+        to_jni_result(&mut env, id.improve(target_level as u8));
+    })
 }

@@ -68,4 +68,8 @@ pedantic = "warn"
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
+# Keep symbols in target/: a stripped .so makes Android tombstones unreadable
+# (frame addresses with no function names). The copy packaged into the APK is
+# stripped separately by build_android.sh / the Gradle buildRustLibs task.
+strip = false
+debug = 1

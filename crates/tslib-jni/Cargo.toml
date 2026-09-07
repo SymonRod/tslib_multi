@@ -20,6 +20,7 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 log = "0.4"
 android_logger = "0.14"
+ndk-context = "0.1"
 tracing-log = "0.2"
 
 [features]

@@ -31,71 +31,75 @@ pub extern "system" fn Java_dev_tslib_Client_nativeCreate(
     password: JString,
     channel: JString,
 ) -> jlong {
-    let address = match require_string(&mut env, &address) {
-        Ok(s) => s,
-        Err(()) => return 0,
-    };
-    let nickname = match require_string(&mut env, &nickname) {
-        Ok(s) => s,
-        Err(()) => return 0,
-    };
-    let password = get_string(&mut env, &password);
-    let channel = get_string(&mut env, &channel);
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeCreate", 0, |mut env| {
+        let address = match require_string(&mut env, &address) {
+            Ok(s) => s,
+            Err(()) => return 0,
+        };
+        let nickname = match require_string(&mut env, &nickname) {
+            Ok(s) => s,
+            Err(()) => return 0,
+        };
+        let password = get_string(&mut env, &password);
+        let channel = get_string(&mut env, &channel);
 
-    if identity_ptr == 0 {
-        throw_tslib_exception(&mut env, "Identity pointer is null");
-        return 0;
-    }
-    let identity = unsafe { &*(identity_ptr as *const tslib_core::Identity) };
-
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            throw_tslib_exception(&mut env, &format!("Failed to create runtime: {e}"));
+        if identity_ptr == 0 {
+            throw_tslib_exception(&mut env, "Identity pointer is null");
             return 0;
         }
-    };
+        let identity = unsafe { &*(identity_ptr as *const tslib_core::Identity) };
 
-    let mut builder = tslib_core::ClientConfig::builder()
-        .address(address)
-        .identity(identity.clone())
-        .nickname(nickname);
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                throw_tslib_exception(&mut env, &format!("Failed to create runtime: {e}"));
+                return 0;
+            }
+        };
 
-    if let Some(pw) = password {
-        builder = builder.password(pw);
-    }
-    if let Some(ch) = channel {
-        builder = builder.channel(ch);
-    }
+        let mut builder = tslib_core::ClientConfig::builder()
+            .address(address)
+            .identity(identity.clone())
+            .nickname(nickname);
 
-    let config = match to_jni_result(&mut env, builder.build()) {
-        Some(c) => c,
-        None => return 0,
-    };
-
-    let client = match runtime.block_on(async { tslib_core::Client::connect(config) }) {
-        Ok(c) => c,
-        Err(e) => {
-            throw_tslib_exception(&mut env, &e.to_string());
-            return 0;
+        if let Some(pw) = password {
+            builder = builder.password(pw);
         }
-    };
+        if let Some(ch) = channel {
+            builder = builder.channel(ch);
+        }
 
-    handle_to_ptr(ClientHandle { client, runtime })
+        let config = match to_jni_result(&mut env, builder.build()) {
+            Some(c) => c,
+            None => return 0,
+        };
+
+        let client = match runtime.block_on(async { tslib_core::Client::connect(config) }) {
+            Ok(c) => c,
+            Err(e) => {
+                throw_tslib_exception(&mut env, &e.to_string());
+                return 0;
+            }
+        };
+
+        handle_to_ptr(ClientHandle { client, runtime })
+    })
 }
 
 /// `Client.nativeDestroy(ptr)` — free the client.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_tslib_Client_nativeDestroy(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) {
-    if ptr != 0 {
-        unsafe {
-            drop(Box::from_raw(ptr as *mut ClientHandle));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeDestroy", (), |_env| {
+        if ptr != 0 {
+            unsafe {
+                drop(Box::from_raw(ptr as *mut ClientHandle));
+            }
         }
-    }
+    })
 }
 
 /// `Client.waitConnected()`
@@ -105,26 +109,28 @@ pub extern "system" fn Java_dev_tslib_Client_nativeWaitConnected(
     _class: JClass,
     ptr: jlong,
 ) {
-    log::info!("nativeWaitConnected: waiting...");
-    let handle = ptr_to_handle(ptr);
-    let result = handle.runtime.block_on(handle.client.wait_connected());
-    match &result {
-        Ok(()) => {
-            log::info!(
-                "nativeWaitConnected: OK — {} users, {} channels (server_state)",
-                handle.client.users().len(),
-                handle.client.channels().len()
-            );
-            // Also check direct connection state
-            let direct = handle.client.users_from_connection();
-            log::info!(
-                "nativeWaitConnected: direct connection has {} users",
-                direct.len()
-            );
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeWaitConnected", (), |mut env| {
+        log::info!("nativeWaitConnected: waiting...");
+        let handle = ptr_to_handle(ptr);
+        let result = handle.runtime.block_on(handle.client.wait_connected());
+        match &result {
+            Ok(()) => {
+                log::info!(
+                    "nativeWaitConnected: OK — {} users, {} channels (server_state)",
+                    handle.client.users().len(),
+                    handle.client.channels().len()
+                );
+                // Also check direct connection state
+                let direct = handle.client.users_from_connection();
+                log::info!(
+                    "nativeWaitConnected: direct connection has {} users",
+                    direct.len()
+                );
+            }
+            Err(e) => log::warn!("nativeWaitConnected: FAILED — {}", e),
         }
-        Err(e) => log::warn!("nativeWaitConnected: FAILED — {}", e),
-    }
-    to_jni_result(&mut env, result);
+        to_jni_result(&mut env, result);
+    })
 }
 
 /// `Client.processEvents()` — returns `Event[]`.
@@ -134,34 +140,36 @@ pub extern "system" fn Java_dev_tslib_Client_nativeProcessEvents(
     _class: JClass,
     ptr: jlong,
 ) -> jobjectArray {
-    let handle = ptr_to_handle(ptr);
-    let events = match handle
-        .runtime
-        .block_on(handle.client.process_events())
-    {
-        Ok(evts) => evts,
-        Err(e) => {
-            throw_tslib_exception(&mut env, &e.to_string());
-            return std::ptr::null_mut();
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeProcessEvents", std::ptr::null_mut(), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        let events = match handle
+            .runtime
+            .block_on(handle.client.process_events())
+        {
+            Ok(evts) => evts,
+            Err(e) => {
+                throw_tslib_exception(&mut env, &e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+
+        let event_class = match env.find_class("dev/tslib/Event") {
+            Ok(c) => c,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let array = match env.new_object_array(events.len() as i32, &event_class, &JObject::null()) {
+            Ok(a) => a,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        for (i, event) in events.iter().enumerate() {
+            let obj = create_java_event(&mut env, event);
+            let _ = env.set_object_array_element(&array, i as i32, &obj);
         }
-    };
 
-    let event_class = match env.find_class("dev/tslib/Event") {
-        Ok(c) => c,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    let array = match env.new_object_array(events.len() as i32, &event_class, &JObject::null()) {
-        Ok(a) => a,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    for (i, event) in events.iter().enumerate() {
-        let obj = create_java_event(&mut env, event);
-        let _ = env.set_object_array_element(&array, i as i32, &obj);
-    }
-
-    array.into_raw()
+        array.into_raw()
+    })
 }
 
 /// `Client.disconnect()`
@@ -171,41 +179,47 @@ pub extern "system" fn Java_dev_tslib_Client_nativeDisconnect(
     _class: JClass,
     ptr: jlong,
 ) {
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.disconnect());
-    // Drive the tokio runtime for 500ms to ensure the disconnect packet
-    // is actually sent over the network before the caller destroys us
-    handle.runtime.block_on(async {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    });
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeDisconnect", (), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.disconnect());
+        // Drive the tokio runtime for 500ms to ensure the disconnect packet
+        // is actually sent over the network before the caller destroys us
+        handle.runtime.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        });
+    })
 }
 
 /// `Client.isConnected()`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_tslib_Client_nativeIsConnected(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) -> jboolean {
-    let handle = ptr_to_handle(ptr);
-    handle.client.is_connected() as jboolean
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeIsConnected", 0, |_env| {
+        let handle = ptr_to_handle(ptr);
+        handle.client.is_connected() as jboolean
+    })
 }
 
 /// `Client.getState()`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_tslib_Client_nativeGetState(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) -> jint {
-    let handle = ptr_to_handle(ptr);
-    match handle.client.state() {
-        tslib_core::ConnectionState::Disconnected => 0,
-        tslib_core::ConnectionState::Connecting => 1,
-        tslib_core::ConnectionState::Connected => 2,
-        tslib_core::ConnectionState::Initializing => 3,
-        tslib_core::ConnectionState::Reconnecting => 4,
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetState", 0, |_env| {
+        let handle = ptr_to_handle(ptr);
+        match handle.client.state() {
+            tslib_core::ConnectionState::Disconnected => 0,
+            tslib_core::ConnectionState::Connecting => 1,
+            tslib_core::ConnectionState::Connected => 2,
+            tslib_core::ConnectionState::Initializing => 3,
+            tslib_core::ConnectionState::Reconnecting => 4,
+        }
+    })
 }
 
 /// `Client.getClientId()` — returns `Integer` or null.
@@ -215,18 +229,20 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetClientId(
     _class: JClass,
     ptr: jlong,
 ) -> jobject {
-    let handle = ptr_to_handle(ptr);
-    match handle.client.client_id() {
-        Some(id) => env
-            .new_object(
-                "java/lang/Integer",
-                "(I)V",
-                &[JValue::Int(id as i32)],
-            )
-            .map(|o| o.into_raw())
-            .unwrap_or(std::ptr::null_mut()),
-        None => std::ptr::null_mut(),
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetClientId", std::ptr::null_mut(), |env| {
+        let handle = ptr_to_handle(ptr);
+        match handle.client.client_id() {
+            Some(id) => env
+                .new_object(
+                    "java/lang/Integer",
+                    "(I)V",
+                    &[JValue::Int(id as i32)],
+                )
+                .map(|o| o.into_raw())
+                .unwrap_or(std::ptr::null_mut()),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// `Client.getChannelId()` — returns `Long` or null.
@@ -236,18 +252,20 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetChannelId(
     _class: JClass,
     ptr: jlong,
 ) -> jobject {
-    let handle = ptr_to_handle(ptr);
-    match handle.client.channel_id() {
-        Some(id) => env
-            .new_object(
-                "java/lang/Long",
-                "(J)V",
-                &[JValue::Long(id as i64)],
-            )
-            .map(|o| o.into_raw())
-            .unwrap_or(std::ptr::null_mut()),
-        None => std::ptr::null_mut(),
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetChannelId", std::ptr::null_mut(), |env| {
+        let handle = ptr_to_handle(ptr);
+        match handle.client.channel_id() {
+            Some(id) => env
+                .new_object(
+                    "java/lang/Long",
+                    "(J)V",
+                    &[JValue::Long(id as i64)],
+                )
+                .map(|o| o.into_raw())
+                .unwrap_or(std::ptr::null_mut()),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// `Client.getChannels()` — returns `Channel[]`.
@@ -257,26 +275,28 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetChannels(
     _class: JClass,
     ptr: jlong,
 ) -> jobjectArray {
-    let handle = ptr_to_handle(ptr);
-    let channels = handle.client.channels();
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetChannels", std::ptr::null_mut(), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        let channels = handle.client.channels();
 
-    let channel_class = match env.find_class("dev/tslib/Channel") {
-        Ok(c) => c,
-        Err(_) => return std::ptr::null_mut(),
-    };
+        let channel_class = match env.find_class("dev/tslib/Channel") {
+            Ok(c) => c,
+            Err(_) => return std::ptr::null_mut(),
+        };
 
-    let array = match env.new_object_array(channels.len() as i32, &channel_class, &JObject::null())
-    {
-        Ok(a) => a,
-        Err(_) => return std::ptr::null_mut(),
-    };
+        let array = match env.new_object_array(channels.len() as i32, &channel_class, &JObject::null())
+        {
+            Ok(a) => a,
+            Err(_) => return std::ptr::null_mut(),
+        };
 
-    for (i, ch) in channels.iter().enumerate() {
-        let obj = create_java_channel(&mut env, ch);
-        let _ = env.set_object_array_element(&array, i as i32, &obj);
-    }
+        for (i, ch) in channels.iter().enumerate() {
+            let obj = create_java_channel(&mut env, ch);
+            let _ = env.set_object_array_element(&array, i as i32, &obj);
+        }
 
-    array.into_raw()
+        array.into_raw()
+    })
 }
 
 /// `Client.getUsers()` — returns `User[]`.
@@ -286,45 +306,47 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetUsers(
     _class: JClass,
     ptr: jlong,
 ) -> jobjectArray {
-    let handle = ptr_to_handle(ptr);
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetUsers", std::ptr::null_mut(), |mut env| {
+        let handle = ptr_to_handle(ptr);
 
-    // Try to get users from server_state first
-    let mut users = handle.client.users();
+        // Try to get users from server_state first
+        let mut users = handle.client.users();
 
-    // If server_state is empty, try syncing from tsclientlib state
-    if users.is_empty() {
-        log::debug!("nativeGetUsers: server_state.users is empty, trying sync_state");
-        if let Err(e) = handle.client.sync_state() {
-            log::warn!("nativeGetUsers: sync_state failed: {}", e);
+        // If server_state is empty, try syncing from tsclientlib state
+        if users.is_empty() {
+            log::debug!("nativeGetUsers: server_state.users is empty, trying sync_state");
+            if let Err(e) = handle.client.sync_state() {
+                log::warn!("nativeGetUsers: sync_state failed: {}", e);
+            }
+            users = handle.client.users();
         }
-        users = handle.client.users();
-    }
 
-    // If still empty, try reading directly from tsclientlib state
-    if users.is_empty() {
-        log::debug!("nativeGetUsers: still empty after sync, trying direct read");
-        users = handle.client.users_from_connection();
-        log::info!("nativeGetUsers: direct read got {} users", users.len());
-    }
+        // If still empty, try reading directly from tsclientlib state
+        if users.is_empty() {
+            log::debug!("nativeGetUsers: still empty after sync, trying direct read");
+            users = handle.client.users_from_connection();
+            log::info!("nativeGetUsers: direct read got {} users", users.len());
+        }
 
-    log::debug!("nativeGetUsers: returning {} users", users.len());
+        log::debug!("nativeGetUsers: returning {} users", users.len());
 
-    let user_class = match env.find_class("dev/tslib/User") {
-        Ok(c) => c,
-        Err(_) => return std::ptr::null_mut(),
-    };
+        let user_class = match env.find_class("dev/tslib/User") {
+            Ok(c) => c,
+            Err(_) => return std::ptr::null_mut(),
+        };
 
-    let array = match env.new_object_array(users.len() as i32, &user_class, &JObject::null()) {
-        Ok(a) => a,
-        Err(_) => return std::ptr::null_mut(),
-    };
+        let array = match env.new_object_array(users.len() as i32, &user_class, &JObject::null()) {
+            Ok(a) => a,
+            Err(_) => return std::ptr::null_mut(),
+        };
 
-    for (i, user) in users.iter().enumerate() {
-        let obj = create_java_user(&mut env, user);
-        let _ = env.set_object_array_element(&array, i as i32, &obj);
-    }
+        for (i, user) in users.iter().enumerate() {
+            let obj = create_java_user(&mut env, user);
+            let _ = env.set_object_array_element(&array, i as i32, &obj);
+        }
 
-    array.into_raw()
+        array.into_raw()
+    })
 }
 
 /// `Client.getChannel(id)` — returns `Channel` or null.
@@ -335,11 +357,13 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetChannel(
     ptr: jlong,
     id: jlong,
 ) -> jobject {
-    let handle = ptr_to_handle(ptr);
-    match handle.client.channel(id as u64) {
-        Some(ch) => create_java_channel(&mut env, &ch).into_raw(),
-        None => std::ptr::null_mut(),
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetChannel", std::ptr::null_mut(), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        match handle.client.channel(id as u64) {
+            Some(ch) => create_java_channel(&mut env, &ch).into_raw(),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// `Client.getUser(id)` — returns `User` or null.
@@ -350,11 +374,13 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetUser(
     ptr: jlong,
     id: jint,
 ) -> jobject {
-    let handle = ptr_to_handle(ptr);
-    match handle.client.user(id as u16) {
-        Some(u) => create_java_user(&mut env, &u).into_raw(),
-        None => std::ptr::null_mut(),
-    }
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetUser", std::ptr::null_mut(), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        match handle.client.user(id as u16) {
+            Some(u) => create_java_user(&mut env, &u).into_raw(),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// `Client.getServerInfo()`
@@ -364,9 +390,11 @@ pub extern "system" fn Java_dev_tslib_Client_nativeGetServerInfo(
     _class: JClass,
     ptr: jlong,
 ) -> jobject {
-    let handle = ptr_to_handle(ptr);
-    let info = &handle.client.server_state().server;
-    create_java_server_info(&mut env, info).into_raw()
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeGetServerInfo", std::ptr::null_mut(), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        let info = &handle.client.server_state().server;
+        create_java_server_info(&mut env, info).into_raw()
+    })
 }
 
 /// `Client.sendServerMessage(msg)`
@@ -377,12 +405,14 @@ pub extern "system" fn Java_dev_tslib_Client_nativeSendServerMessage(
     ptr: jlong,
     msg: JString,
 ) {
-    let msg = match require_string(&mut env, &msg) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.send_server_message(msg));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeSendServerMessage", (), |mut env| {
+        let msg = match require_string(&mut env, &msg) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.send_server_message(msg));
+    })
 }
 
 /// `Client.sendChannelMessage(msg)`
@@ -393,12 +423,14 @@ pub extern "system" fn Java_dev_tslib_Client_nativeSendChannelMessage(
     ptr: jlong,
     msg: JString,
 ) {
-    let msg = match require_string(&mut env, &msg) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.send_channel_message(msg));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeSendChannelMessage", (), |mut env| {
+        let msg = match require_string(&mut env, &msg) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.send_channel_message(msg));
+    })
 }
 
 /// `Client.sendPrivateMessage(userId, msg)`
@@ -410,15 +442,17 @@ pub extern "system" fn Java_dev_tslib_Client_nativeSendPrivateMessage(
     user_id: jint,
     msg: JString,
 ) {
-    let msg = match require_string(&mut env, &msg) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(
-        &mut env,
-        handle.client.send_private_message(user_id as u16, msg),
-    );
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeSendPrivateMessage", (), |mut env| {
+        let msg = match require_string(&mut env, &msg) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(
+            &mut env,
+            handle.client.send_private_message(user_id as u16, msg),
+        );
+    })
 }
 
 /// `Client.moveToChannel(channelId)`
@@ -429,11 +463,13 @@ pub extern "system" fn Java_dev_tslib_Client_nativeMoveToChannel(
     ptr: jlong,
     channel_id: jlong,
 ) {
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(
-        &mut env,
-        handle.client.move_to_channel(channel_id as u64),
-    );
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeMoveToChannel", (), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(
+            &mut env,
+            handle.client.move_to_channel(channel_id as u64),
+        );
+    })
 }
 
 /// `Client.syncState()`
@@ -443,21 +479,23 @@ pub extern "system" fn Java_dev_tslib_Client_nativeSyncState(
     _class: JClass,
     ptr: jlong,
 ) {
-    let handle = ptr_to_handle(ptr);
-    let result = handle.client.sync_state();
-    match &result {
-        Ok(()) => {
-            log::info!(
-                "nativeSyncState: OK — {} users, {} channels",
-                handle.client.users().len(),
-                handle.client.channels().len()
-            );
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeSyncState", (), |mut env| {
+        let handle = ptr_to_handle(ptr);
+        let result = handle.client.sync_state();
+        match &result {
+            Ok(()) => {
+                log::info!(
+                    "nativeSyncState: OK — {} users, {} channels",
+                    handle.client.users().len(),
+                    handle.client.channels().len()
+                );
+            }
+            Err(e) => {
+                log::warn!("nativeSyncState: FAILED — {}", e);
+            }
         }
-        Err(e) => {
-            log::warn!("nativeSyncState: FAILED — {}", e);
-        }
-    }
-    to_jni_result(&mut env, result);
+        to_jni_result(&mut env, result);
+    })
 }
 
 /// `Client.downloadFile(channelId, path)` — initiate a file download.
@@ -469,15 +507,17 @@ pub extern "system" fn Java_dev_tslib_Client_nativeDownloadFile(
     channel_id: jlong,
     path: JString,
 ) {
-    let path = match require_string(&mut env, &path) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(
-        &mut env,
-        handle.client.download_file(channel_id as u64, &path),
-    );
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeDownloadFile", (), |mut env| {
+        let path = match require_string(&mut env, &path) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(
+            &mut env,
+            handle.client.download_file(channel_id as u64, &path),
+        );
+    })
 }
 
 /// `Client.uploadFile(channelId, path, data, overwrite)` — initiate a file upload.
@@ -491,22 +531,24 @@ pub extern "system" fn Java_dev_tslib_Client_nativeUploadFile(
     data: JByteArray,
     overwrite: jboolean,
 ) {
-    let path = match require_string(&mut env, &path) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let bytes = match env.convert_byte_array(&data) {
-        Ok(b) => b,
-        Err(e) => {
-            throw_tslib_exception(&mut env, &format!("Failed to read upload data: {e}"));
-            return;
-        }
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(
-        &mut env,
-        handle.client.upload_file(channel_id as u64, &path, &bytes, overwrite != 0),
-    );
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeUploadFile", (), |mut env| {
+        let path = match require_string(&mut env, &path) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let bytes = match env.convert_byte_array(&data) {
+            Ok(b) => b,
+            Err(e) => {
+                throw_tslib_exception(&mut env, &format!("Failed to read upload data: {e}"));
+                return;
+            }
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(
+            &mut env,
+            handle.client.upload_file(channel_id as u64, &path, &bytes, overwrite != 0),
+        );
+    })
 }
 
 /// `Client.setInputMuted(muted)` — notify the server of our input muted state.
@@ -517,15 +559,17 @@ pub extern "system" fn Java_dev_tslib_Client_nativeSetInputMuted(
     ptr: jlong,
     muted: jboolean,
 ) {
-    let muted_bool = muted != 0;
-    log::info!("nativeSetInputMuted: muted={}", muted_bool);
-    let handle = ptr_to_handle(ptr);
-    let result = handle.client.set_input_muted(muted_bool);
-    match &result {
-        Ok(()) => log::info!("nativeSetInputMuted: OK"),
-        Err(e) => log::error!("nativeSetInputMuted: FAILED — {}", e),
-    }
-    to_jni_result(&mut env, result);
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeSetInputMuted", (), |mut env| {
+        let muted_bool = muted != 0;
+        log::info!("nativeSetInputMuted: muted={}", muted_bool);
+        let handle = ptr_to_handle(ptr);
+        let result = handle.client.set_input_muted(muted_bool);
+        match &result {
+            Ok(()) => log::info!("nativeSetInputMuted: OK"),
+            Err(e) => log::error!("nativeSetInputMuted: FAILED — {}", e),
+        }
+        to_jni_result(&mut env, result);
+    })
 }
 
 /// `Client.listFiles(channelId, path)` — request file list for a channel directory.
@@ -537,13 +581,15 @@ pub extern "system" fn Java_dev_tslib_Client_nativeListFiles(
     channel_id: jlong,
     path: JString,
 ) {
-    let path_str = match require_string(&mut env, &path) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    log::info!("nativeListFiles: channel={}, path={}", channel_id, path_str);
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.list_files(channel_id as u64, &path_str));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeListFiles", (), |mut env| {
+        let path_str = match require_string(&mut env, &path) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        log::info!("nativeListFiles: channel={}, path={}", channel_id, path_str);
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.list_files(channel_id as u64, &path_str));
+    })
 }
 
 /// `Client.queryChannelPermissions(channelId)` — query effective permissions for current user.
@@ -554,9 +600,11 @@ pub extern "system" fn Java_dev_tslib_Client_nativeQueryChannelPermissions(
     ptr: jlong,
     channel_id: jlong,
 ) {
-    log::info!("nativeQueryChannelPermissions: channel={}", channel_id);
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.query_channel_permissions(channel_id as u64));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeQueryChannelPermissions", (), |mut env| {
+        log::info!("nativeQueryChannelPermissions: channel={}", channel_id);
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.query_channel_permissions(channel_id as u64));
+    })
 }
 
 /// `Client.deleteFile(channelId, name)` — delete a file on the server.
@@ -568,12 +616,14 @@ pub extern "system" fn Java_dev_tslib_Client_nativeDeleteFile(
     channel_id: jlong,
     name: JString,
 ) {
-    let name_str = match require_string(&mut env, &name) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.delete_file(channel_id as u64, &name_str));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeDeleteFile", (), |mut env| {
+        let name_str = match require_string(&mut env, &name) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.delete_file(channel_id as u64, &name_str));
+    })
 }
 
 /// `Client.renameFile(channelId, oldName, newName)` — rename a file on the server.
@@ -586,16 +636,18 @@ pub extern "system" fn Java_dev_tslib_Client_nativeRenameFile(
     old_name: JString,
     new_name: JString,
 ) {
-    let old = match require_string(&mut env, &old_name) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let new = match require_string(&mut env, &new_name) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.rename_file(channel_id as u64, &old, &new));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeRenameFile", (), |mut env| {
+        let old = match require_string(&mut env, &old_name) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let new = match require_string(&mut env, &new_name) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.rename_file(channel_id as u64, &old, &new));
+    })
 }
 
 /// `Client.createDirectory(channelId, dirname)` — create a directory on the server.
@@ -607,12 +659,14 @@ pub extern "system" fn Java_dev_tslib_Client_nativeCreateDirectory(
     channel_id: jlong,
     dirname: JString,
 ) {
-    let dir = match require_string(&mut env, &dirname) {
-        Ok(s) => s,
-        Err(()) => return,
-    };
-    let handle = ptr_to_handle(ptr);
-    to_jni_result(&mut env, handle.client.create_directory(channel_id as u64, &dir));
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeCreateDirectory", (), |mut env| {
+        let dir = match require_string(&mut env, &dirname) {
+            Ok(s) => s,
+            Err(()) => return,
+        };
+        let handle = ptr_to_handle(ptr);
+        to_jni_result(&mut env, handle.client.create_directory(channel_id as u64, &dir));
+    })
 }
 
 /// `Client.sendAudio(data, codec)` — send encoded audio data to the server.
@@ -624,23 +678,25 @@ pub extern "system" fn Java_dev_tslib_Client_nativeSendAudio(
     data: JByteArray,
     codec: jint,
 ) {
-    let handle = ptr_to_handle(ptr);
+    crate::error::guard(&mut env, "Java_dev_tslib_Client_nativeSendAudio", (), |mut env| {
+        let handle = ptr_to_handle(ptr);
 
-    let audio_codec = match tslib_core::AudioCodec::from_id(codec as u8) {
-        Some(c) => c,
-        None => {
-            throw_tslib_exception(&mut env, &format!("Invalid audio codec id: {codec}"));
-            return;
-        }
-    };
+        let audio_codec = match tslib_core::AudioCodec::from_id(codec as u8) {
+            Some(c) => c,
+            None => {
+                throw_tslib_exception(&mut env, &format!("Invalid audio codec id: {codec}"));
+                return;
+            }
+        };
 
-    let bytes = match env.convert_byte_array(&data) {
-        Ok(b) => b,
-        Err(e) => {
-            throw_tslib_exception(&mut env, &format!("Failed to read audio data: {e}"));
-            return;
-        }
-    };
+        let bytes = match env.convert_byte_array(&data) {
+            Ok(b) => b,
+            Err(e) => {
+                throw_tslib_exception(&mut env, &format!("Failed to read audio data: {e}"));
+                return;
+            }
+        };
 
-    to_jni_result(&mut env, handle.client.send_audio(&bytes, audio_codec));
+        to_jni_result(&mut env, handle.client.send_audio(&bytes, audio_codec));
+    })
 }

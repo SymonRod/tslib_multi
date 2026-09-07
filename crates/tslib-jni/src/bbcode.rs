@@ -13,14 +13,16 @@ pub extern "system" fn Java_dev_tslib_BBCode_toHtml(
     _class: JClass,
     input: JString,
 ) -> jstring {
-    let input = match require_string(&mut env, &input) {
-        Ok(s) => s,
-        Err(()) => return std::ptr::null_mut(),
-    };
-    let result = BBCodeParser::to_html(&input);
-    env.new_string(&result)
-        .map(|js| js.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    crate::error::guard(&mut env, "Java_dev_tslib_BBCode_toHtml", std::ptr::null_mut(), |mut env| {
+        let input = match require_string(&mut env, &input) {
+            Ok(s) => s,
+            Err(()) => return std::ptr::null_mut(),
+        };
+        let result = BBCodeParser::to_html(&input);
+        env.new_string(&result)
+            .map(|js| js.into_raw())
+            .unwrap_or(std::ptr::null_mut())
+    })
 }
 
 /// `BBCode.toPlain(input)`
@@ -30,14 +32,16 @@ pub extern "system" fn Java_dev_tslib_BBCode_toPlain(
     _class: JClass,
     input: JString,
 ) -> jstring {
-    let input = match require_string(&mut env, &input) {
-        Ok(s) => s,
-        Err(()) => return std::ptr::null_mut(),
-    };
-    let result = BBCodeParser::to_plain(&input);
-    env.new_string(&result)
-        .map(|js| js.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    crate::error::guard(&mut env, "Java_dev_tslib_BBCode_toPlain", std::ptr::null_mut(), |mut env| {
+        let input = match require_string(&mut env, &input) {
+            Ok(s) => s,
+            Err(()) => return std::ptr::null_mut(),
+        };
+        let result = BBCodeParser::to_plain(&input);
+        env.new_string(&result)
+            .map(|js| js.into_raw())
+            .unwrap_or(std::ptr::null_mut())
+    })
 }
 
 /// `BBCode.toAnsi(input)`
@@ -47,14 +51,16 @@ pub extern "system" fn Java_dev_tslib_BBCode_toAnsi(
     _class: JClass,
     input: JString,
 ) -> jstring {
-    let input = match require_string(&mut env, &input) {
-        Ok(s) => s,
-        Err(()) => return std::ptr::null_mut(),
-    };
-    let result = BBCodeParser::to_ansi(&input);
-    env.new_string(&result)
-        .map(|js| js.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    crate::error::guard(&mut env, "Java_dev_tslib_BBCode_toAnsi", std::ptr::null_mut(), |mut env| {
+        let input = match require_string(&mut env, &input) {
+            Ok(s) => s,
+            Err(()) => return std::ptr::null_mut(),
+        };
+        let result = BBCodeParser::to_ansi(&input);
+        env.new_string(&result)
+            .map(|js| js.into_raw())
+            .unwrap_or(std::ptr::null_mut())
+    })
 }
 
 /// `BBCode.strip(input)`
@@ -64,12 +70,14 @@ pub extern "system" fn Java_dev_tslib_BBCode_strip(
     _class: JClass,
     input: JString,
 ) -> jstring {
-    let input = match require_string(&mut env, &input) {
-        Ok(s) => s,
-        Err(()) => return std::ptr::null_mut(),
-    };
-    let result = strip_bbcode(&input);
-    env.new_string(&result)
-        .map(|js| js.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    crate::error::guard(&mut env, "Java_dev_tslib_BBCode_strip", std::ptr::null_mut(), |mut env| {
+        let input = match require_string(&mut env, &input) {
+            Ok(s) => s,
+            Err(()) => return std::ptr::null_mut(),
+        };
+        let result = strip_bbcode(&input);
+        env.new_string(&result)
+            .map(|js| js.into_raw())
+            .unwrap_or(std::ptr::null_mut())
+    })
 }
