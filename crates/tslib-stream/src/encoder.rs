@@ -91,10 +91,13 @@ impl VideoEncoder {
                 let mut child = command
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
+                    .stderr(Stdio::piped())
                     .spawn()
-                    .map_err(|source| Error::Spawn { program, source })?;
+                    .map_err(|source| Error::Spawn { program: program.clone(), source })?;
                 let stdout = child.stdout.take().expect("stdout is piped");
+                // An input that ends early (a dropped download, say) looks like
+                // a normal end of video to ffmpeg; its own stderr says why.
+                log_lines(program, child.stderr.take().expect("stderr is piped"));
                 ffmpeg.args(["-i", "pipe:0"]);
                 ffmpeg.stdin(Stdio::from(stdout));
                 input_child = Some(child);
@@ -128,11 +131,7 @@ impl VideoEncoder {
         let stdout = ffmpeg.stdout.take().expect("stdout is piped");
         let stderr = ffmpeg.stderr.take().expect("stderr is piped");
 
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
-                warn!("ffmpeg: {line}");
-            }
-        });
+        log_lines("ffmpeg".into(), stderr);
 
         let state = Arc::new(Shared::default());
         let reader_state = state.clone();
@@ -169,6 +168,15 @@ impl Drop for VideoEncoder {
             }
         });
     }
+}
+
+/// Forwards a child's stderr to the log, line by line, until it closes.
+fn log_lines(program: String, stderr: impl std::io::Read + Send + 'static) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
+            warn!("{program}: {line}");
+        }
+    });
 }
 
 /// Publishes each frame at its presentation time. A pause freezes the clock
