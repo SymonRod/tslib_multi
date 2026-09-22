@@ -38,6 +38,9 @@ impl Default for EncoderConfig {
 pub enum VideoInput {
     /// A generated test pattern.
     TestPattern,
+    /// A generated source: an ffmpeg lavfi filter graph, such as a waiting
+    /// screen. It is scaled to the configured height like any other input.
+    Lavfi(String),
     /// Anything ffmpeg can open: a file, a direct media URL.
     Ffmpeg(String),
     /// A command whose stdout is a media container, piped into ffmpeg —
@@ -73,6 +76,10 @@ impl VideoEncoder {
         match input {
             VideoInput::TestPattern => {
                 ffmpeg.args(["-f", "lavfi", "-i", &format!("testsrc2=size=1280x720:rate={}", config.fps)]);
+                ffmpeg.stdin(Stdio::null());
+            }
+            VideoInput::Lavfi(graph) => {
+                ffmpeg.args(["-f", "lavfi", "-i", &graph]);
                 ffmpeg.stdin(Stdio::null());
             }
             VideoInput::Ffmpeg(input) => {
