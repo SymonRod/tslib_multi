@@ -9,11 +9,13 @@ members = [
     "crates/tslib-python",
     "crates/tslib-jni",
     "crates/tslib-bot",
+    "crates/tslib-stream",
     "examples/simple-bot",
     "examples/voice-client",
     "examples/test-suite",
     "examples/send-msg",
     "examples/stream-capture",
+    "examples/stream-broadcast",
 ]
 
 [workspace.package]

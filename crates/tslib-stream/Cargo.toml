@@ -1,0 +1,17 @@
+[package]
+name = "tslib-stream"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TeamSpeak 6 screen sharing broadcaster - ffmpeg VP8 encode and one WebRTC peer per viewer"
+
+[dependencies]
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+bytes = "1"
+webrtc = "0.21"
+rtc = "0.21"
