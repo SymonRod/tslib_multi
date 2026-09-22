@@ -279,6 +279,12 @@ pub fn create_java_event<'a>(
             }
             "stream_join_response"
         }
+        Event::StreamJoinRequest { viewer_id, stream_id, is_remove } => {
+            put_int(env, &map, "viewer_id", *viewer_id as i32);
+            put_string(env, &map, "stream_id", stream_id);
+            put_int(env, &map, "is_remove", *is_remove as i32);
+            "stream_join_request"
+        }
         Event::StreamSignaling { owner_id, stream_id, json } => {
             put_int(env, &map, "owner_id", *owner_id as i32);
             put_string(env, &map, "stream_id", stream_id);

@@ -8,7 +8,9 @@ use crate::connection::ConnectionState;
 use crate::error::{ConnectionError, Error, Result};
 use crate::events::{AudioCodec, Event, EventHandler};
 use crate::state::{Channel, ServerState, User};
-use crate::streams::{Stream, StreamRegistry};
+use crate::streams::{
+    Stream, StreamRegistry, StreamSetup, STREAM_MODE_P2P, STREAM_REASON_KICKED, STREAM_REASON_LEFT,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -783,6 +785,24 @@ impl Client {
                 }
                 event
             }
+            InMessage::JoinStreamRequest(ref request) => {
+                let mut event = None;
+                for part in request.iter() {
+                    let evt = Event::StreamJoinRequest {
+                        viewer_id: part.client_id.0,
+                        stream_id: part.stream_id.clone(),
+                        is_remove: part.is_remove,
+                    };
+                    log::info!(
+                        "Stream {} request from {}",
+                        if part.is_remove { "leave" } else { "join" },
+                        part.client_id.0
+                    );
+                    let _ = self.event_tx.send(evt.clone());
+                    event = Some(evt);
+                }
+                event
+            }
             InMessage::StreamSignaling(ref signaling) => {
                 let mut event = None;
                 for part in signaling.iter() {
@@ -1325,6 +1345,113 @@ impl Client {
         c2s::OutRequestStreamInfoPart {
             client_id: ClientId(owner_id),
             stream_id: stream_id.map(Into::into),
+        }
+        .send(con)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Our own streams, as the server confirmed them.
+    ///
+    /// [`Client::setup_stream`] gets no id back directly: the server assigns
+    /// one and announces it like any other stream, so a new entry here (or in
+    /// [`Event::StreamsChanged`]) is the answer.
+    pub fn own_streams(&self) -> Vec<Stream> {
+        let Some(own_id) = self.client_id else { return Vec::new() };
+        self.streams().into_iter().filter(|s| s.owner_id == own_id).collect()
+    }
+
+    /// Start sharing a stream (TeamSpeak 6, P2P mode).
+    ///
+    /// The server assigns the id and may override the bitrate; see
+    /// [`Client::own_streams`]. Viewers then arrive as
+    /// [`Event::StreamJoinRequest`], and the media itself flows over WebRTC,
+    /// which is up to the caller.
+    pub fn setup_stream(&mut self, setup: &StreamSetup) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        c2s::OutSetupStreamPart {
+            name: Some(setup.name.as_str().into()),
+            stream_type: Some(setup.stream_type),
+            mode: Some(STREAM_MODE_P2P),
+            bitrate: Some(setup.bitrate),
+            viewer_limit: Some(setup.viewer_limit),
+            audio: Some(setup.audio),
+            // The required spelling; `access` is accepted but does not count.
+            accessibility: setup.accessibility,
+        }
+        .send(con)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Rename one of our streams. Viewers see a `notifystreamupdated` patch.
+    pub fn rename_stream(&mut self, stream_id: &str, name: &str) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        c2s::OutUpdateStreamPart {
+            stream_id: stream_id.into(),
+            name: Some(name.into()),
+            stream_type: None,
+            mode: None,
+            bitrate: None,
+            viewer_limit: None,
+            audio: None,
+            accessibility: None,
+        }
+        .send(con)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Stop sharing one of our streams.
+    pub fn stop_stream(&mut self, stream_id: &str) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        c2s::OutStopStreamPart { stream_id: stream_id.into(), reason: STREAM_REASON_LEFT }
+            .send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Accept a viewer's join request with our WebRTC offer. The server
+    /// refuses an accept without one. The viewer's answer and candidates come
+    /// back as [`Event::StreamSignaling`].
+    pub fn accept_stream_viewer(&mut self, viewer_id: u16, stream_id: &str, offer: &str) -> Result<()> {
+        self.respond_join_stream_request(viewer_id, stream_id, 1, offer)
+    }
+
+    /// Refuse a viewer's join request.
+    pub fn refuse_stream_viewer(&mut self, viewer_id: u16, stream_id: &str) -> Result<()> {
+        self.respond_join_stream_request(viewer_id, stream_id, 0, "")
+    }
+
+    fn respond_join_stream_request(
+        &mut self,
+        viewer_id: u16,
+        stream_id: &str,
+        decision: u32,
+        offer: &str,
+    ) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        // Never log the offer: it carries SDP and ICE candidates.
+        debug!("Answering join request of {}: decision={}", viewer_id, decision);
+        c2s::OutRespondJoinStreamRequestPart {
+            client_id: ClientId(viewer_id),
+            stream_id: stream_id.into(),
+            decision,
+            message: "".into(),
+            offer: offer.into(),
+        }
+        .send(con)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Kick a viewer out of one of our streams.
+    pub fn remove_stream_viewer(&mut self, viewer_id: u16, stream_id: &str) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        c2s::OutRemoveClientFromStreamPart {
+            client_id: ClientId(viewer_id),
+            stream_id: stream_id.into(),
+            reason: STREAM_REASON_KICKED,
         }
         .send(con)
         .map_err(|e| Error::Internal(e.to_string()))?;

@@ -359,6 +359,12 @@ pub fn event_to_dict<'py>(py: Python<'py>, event: &tslib_core::events::Event) ->
             let _ = dict.set_item("stream_id", stream_id.as_str());
             let _ = dict.set_item("decision", decision);
         }
+        Event::StreamJoinRequest { viewer_id, stream_id, is_remove } => {
+            let _ = dict.set_item("type", "stream_join_request");
+            let _ = dict.set_item("viewer_id", viewer_id);
+            let _ = dict.set_item("stream_id", stream_id.as_str());
+            let _ = dict.set_item("is_remove", is_remove);
+        }
         Event::StreamSignaling { owner_id, stream_id, .. } => {
             let _ = dict.set_item("type", "stream_signaling");
             let _ = dict.set_item("owner_id", owner_id);

@@ -39,8 +39,20 @@ pub enum Event {
         message: Option<String>,
         offer: Option<String>,
     },
-    /// A WebRTC signaling message relayed verbatim from the sharer. The server
-    /// does not inspect `json`, so parse it defensively.
+    /// A viewer asked to join one of our own streams, or left it
+    /// (`is_remove`). Answer a join with [`Client::accept_stream_viewer`] or
+    /// [`Client::refuse_stream_viewer`].
+    ///
+    /// [`Client::accept_stream_viewer`]: crate::Client::accept_stream_viewer
+    /// [`Client::refuse_stream_viewer`]: crate::Client::refuse_stream_viewer
+    StreamJoinRequest {
+        viewer_id: u16,
+        stream_id: String,
+        is_remove: bool,
+    },
+    /// A WebRTC signaling message relayed verbatim from the other peer: the
+    /// sharer when viewing, the viewer when broadcasting. The server does not
+    /// inspect `json`, so parse it defensively.
     StreamSignaling {
         owner_id: u16,
         stream_id: String,

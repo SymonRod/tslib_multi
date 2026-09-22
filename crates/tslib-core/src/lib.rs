@@ -50,4 +50,4 @@ pub use error::{Error, Result};
 pub use events::{AudioCodec, Event, EventHandler};
 pub use identity::Identity;
 pub use state::{Channel, ServerState, User};
-pub use streams::Stream;
+pub use streams::{Stream, StreamSetup};

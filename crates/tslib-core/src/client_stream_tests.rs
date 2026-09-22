@@ -198,3 +198,46 @@ async fn viewer_commands_need_a_connection() {
     assert!(client.send_stream_signaling(2, "a", "{}").is_err());
     assert!(client.request_stream_info(2, None).is_err());
 }
+
+#[tokio::test]
+async fn join_requests_from_viewers_become_events() {
+    let mut client = client();
+    let mut receiver = client.subscribe();
+    for (raw, remove) in [
+        ("notifyjoinstreamrequest clid=5 id=a msg is_remove=0", false),
+        ("notifyjoinstreamrequest clid=5 id=a msg is_remove=1", true),
+    ] {
+        let events = client.process_stream_item(notification(raw)).await;
+        let Event::StreamJoinRequest { viewer_id, stream_id, is_remove } = &events[0] else {
+            panic!("Expected a join request, got {:?}", events[0]);
+        };
+        assert_eq!(*viewer_id, 5);
+        assert_eq!(stream_id, "a");
+        assert_eq!(*is_remove, remove);
+        assert!(matches!(receiver.try_recv().unwrap(), Event::StreamJoinRequest { .. }));
+    }
+}
+
+#[tokio::test]
+async fn own_streams_are_the_ones_we_own() {
+    let mut client = client();
+    assert!(client.own_streams().is_empty());
+    client.client_id = Some(7);
+    client
+        .process_stream_item(notification("notifystreamstarted clid=7 id=mine|clid=2 id=theirs"))
+        .await;
+    let own = client.own_streams();
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].id, "mine");
+}
+
+#[tokio::test]
+async fn broadcaster_commands_need_a_connection() {
+    let mut client = client();
+    assert!(client.setup_stream(&StreamSetup::new("Test", 1_500_000)).is_err());
+    assert!(client.rename_stream("a", "Renamed").is_err());
+    assert!(client.stop_stream("a").is_err());
+    assert!(client.accept_stream_viewer(5, "a", "v=0").is_err());
+    assert!(client.refuse_stream_viewer(5, "a").is_err());
+    assert!(client.remove_stream_viewer(5, "a").is_err());
+}

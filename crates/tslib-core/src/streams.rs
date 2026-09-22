@@ -18,6 +18,45 @@ pub struct Stream {
     pub audio: Option<bool>,
 }
 
+/// Source type: a whole screen. The desktop client also uses 1 (camera) and
+/// 3 (window).
+pub const STREAM_TYPE_SCREEN: u32 = 2;
+/// Accessibility: anyone who can see us may ask to join.
+pub const STREAM_ACCESS_PUBLIC: u32 = 1;
+/// Transport mode. The SFU (2) is not released yet.
+pub(crate) const STREAM_MODE_P2P: u32 = 1;
+/// `ScreenshareLeaveReason` values the broadcaster sends.
+pub(crate) const STREAM_REASON_LEFT: u32 = 1;
+pub(crate) const STREAM_REASON_KICKED: u32 = 4;
+
+/// What to publish with [`Client::setup_stream`](crate::Client::setup_stream).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamSetup {
+    pub name: String,
+    pub stream_type: u32,
+    pub accessibility: u32,
+    /// Requested bitrate in bit/s; the server reports its own figure back.
+    pub bitrate: u32,
+    /// 0 means unlimited.
+    pub viewer_limit: u32,
+    /// Whether the WebRTC session carries an audio track.
+    pub audio: bool,
+}
+
+impl StreamSetup {
+    /// A public, video-only screen share.
+    pub fn new(name: impl Into<String>, bitrate: u32) -> Self {
+        Self {
+            name: name.into(),
+            stream_type: STREAM_TYPE_SCREEN,
+            accessibility: STREAM_ACCESS_PUBLIC,
+            bitrate,
+            viewer_limit: 0,
+            audio: false,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct StreamRegistry {
     streams: HashMap<(u16, String), Stream>,
