@@ -232,6 +232,21 @@ async fn own_streams_are_the_ones_we_own() {
 }
 
 #[tokio::test]
+async fn a_stream_we_stop_leaves_the_registry() {
+    let mut client = client();
+    client.client_id = Some(7);
+    client
+        .process_stream_item(notification("notifystreamstarted clid=7 id=old|clid=2 id=theirs"))
+        .await;
+    assert!(client.forget_own_stream("old").is_some());
+    assert!(client.own_streams().is_empty());
+    assert_eq!(client.streams().len(), 1);
+    // Not ours, or already gone: nothing changes.
+    assert!(client.forget_own_stream("theirs").is_none());
+    assert!(client.forget_own_stream("old").is_none());
+}
+
+#[tokio::test]
 async fn broadcaster_commands_need_a_connection() {
     let mut client = client();
     assert!(client.setup_stream(&StreamSetup::new("Test", 1_500_000)).is_err());

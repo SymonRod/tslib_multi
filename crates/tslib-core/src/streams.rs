@@ -146,6 +146,10 @@ impl StreamRegistry {
         true
     }
 
+    pub(crate) fn remove(&mut self, owner_id: u16, stream_id: &str) -> bool {
+        self.streams.remove(&(owner_id, stream_id.to_string())).is_some()
+    }
+
     pub(crate) fn remove_owner(&mut self, owner_id: u16) -> bool {
         let previous_len = self.streams.len();
         self.streams.retain(|(owner, _), _| *owner != owner_id);

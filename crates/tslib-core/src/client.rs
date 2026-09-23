@@ -1408,7 +1408,16 @@ impl Client {
         c2s::OutStopStreamPart { stream_id: stream_id.into(), reason: STREAM_REASON_LEFT }
             .send(con)
             .map_err(|e| Error::Internal(e.to_string()))?;
+        self.forget_own_stream(stream_id);
         Ok(())
+    }
+
+    /// The server sends `notifystreamstopped` to everyone but the owner, so
+    /// a stream we stop ourselves has to leave the registry here. Otherwise
+    /// it lingers in [`Client::own_streams`] next to the next one we set up.
+    fn forget_own_stream(&mut self, stream_id: &str) -> Option<Event> {
+        let own_id = self.client_id?;
+        self.streams.remove(own_id, stream_id).then(|| self.streams_changed())
     }
 
     /// Accept a viewer's join request with our WebRTC offer. The server
