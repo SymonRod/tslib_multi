@@ -25,7 +25,7 @@ mod broadcaster;
 mod encoder;
 
 pub use broadcaster::{BroadcastConfig, BroadcastEvent, Broadcaster};
-pub use encoder::{EncoderConfig, VideoEncoder, VideoInput};
+pub use encoder::{EncoderConfig, VideoEncoder, VideoInput, VideoProgress};
 
 /// Errors from this crate.
 #[derive(Debug, thiserror::Error)]

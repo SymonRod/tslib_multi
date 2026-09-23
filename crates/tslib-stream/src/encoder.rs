@@ -33,6 +33,27 @@ impl Default for EncoderConfig {
     }
 }
 
+/// Progress bar shown at the bottom of the video: how much of the track
+/// has played and how much is left. `total_secs` is the track length,
+/// `offset_secs` where playback starts (seek position).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoProgress {
+    pub total_secs: f64,
+    pub offset_secs: f64,
+}
+
+impl VideoProgress {
+    pub fn new(total_secs: f64, offset_secs: f64) -> Option<Self> {
+        if !total_secs.is_finite() || !offset_secs.is_finite() || total_secs <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            total_secs,
+            offset_secs: offset_secs.clamp(0.0, total_secs),
+        })
+    }
+}
+
 /// Where the video comes from.
 #[derive(Debug)]
 pub enum VideoInput {
@@ -46,6 +67,59 @@ pub enum VideoInput {
     /// A command whose stdout is a media container, piped into ffmpeg —
     /// typically `yt-dlp -o - <url>`.
     Command(Command),
+    /// Like [`VideoInput::Command`], but with a progress bar burned into the
+    /// bottom of the picture (elapsed + time left).
+    CommandWithProgress {
+        command: Command,
+        progress: VideoProgress,
+    },
+}
+
+impl VideoInput {
+    /// Segments of the progress bar fill. `drawbox` has no per-frame `eval`:
+    /// its geometry is frozen at init, so one box with an animated width can
+    /// never work. Each segment is instead switched on by its own time window
+    /// (`enable` is evaluated per frame with the real timestamp).
+    pub const PROGRESS_SEGS: u32 = 40;
+
+    /// Filter chain suffix that draws the progress bar along the bottom edge,
+    /// or empty when there is nothing to show. Public so callers can
+    /// smoke-test it with ffmpeg.
+    pub fn progress_filter(progress: Option<VideoProgress>, height: u32) -> String {
+        let Some(p) = progress else {
+            return String::new();
+        };
+        let total = p.total_secs.max(1.0);
+        let off = p.offset_secs.clamp(0.0, total);
+        // Bar thickness scales with the picture, time text just above it.
+        let bar_h = (height / 48).clamp(8, 18);
+        let font = (height / 32).clamp(12, 24);
+        let text_y = format!("h-{bar_h}-{font}-8");
+        // Elapsed time for this encode run is `t` (starts at 0 after a seek),
+        // so absolute position is `t+off`. Commas inside expressions must be
+        // escaped (`\,`) because they would otherwise split filter options,
+        // and colons inside drawtext must be `\:` for the same reason.
+        // In drawbox `h`/`w` are the box's own size, not the frame's: the
+        // frame is `ih`/`iw` (`y=h-N` would pin the bar to the top).
+        let mut f = format!(",drawbox=x=0:y=ih-{bar_h}:w=iw:h={bar_h}:color=black@0.6:t=fill");
+        for k in 0..Self::PROGRESS_SEGS {
+            // Segment k lights up once (k+1)/SEGS of the track has played:
+            // empty at the start, full exactly at the end.
+            f.push_str(&format!(
+                ",drawbox=x='iw*{k}/{}':y=ih-{bar_h}:w='iw/{}+1':h={bar_h}:color=0xe50914:t=fill:enable='gte(t+{off:.3},{total:.3}*{kp}/{})'",
+                Self::PROGRESS_SEGS,
+                Self::PROGRESS_SEGS,
+                Self::PROGRESS_SEGS,
+                kp = k + 1,
+            ));
+        }
+        f.push_str(&format!(
+            ",drawtext=font=Sans:text='- %{{eif\\:max(0\\,{total:.3}-(t+{off:.3}))/60\\:d}}\\:%{{eif\\:mod(max(0\\,{total:.3}-(t+{off:.3}))\\,60)\\:d\\:2}}':\
+            fontcolor=white:fontsize={font}:x=(w-tw)/2:y={text_y}:\
+            box=1:boxcolor=black@0.6:boxborderw=4"
+        ));
+        f
+    }
 }
 
 /// A running encode. Dropping it kills ffmpeg and the input command.
@@ -73,6 +147,7 @@ impl VideoEncoder {
         let mut ffmpeg = Command::new("ffmpeg");
         ffmpeg.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
         let mut input_child = None;
+        let mut progress: Option<VideoProgress> = None;
         match input {
             VideoInput::TestPattern => {
                 ffmpeg.args(["-f", "lavfi", "-i", &format!("testsrc2=size=1280x720:rate={}", config.fps)]);
@@ -86,27 +161,20 @@ impl VideoEncoder {
                 ffmpeg.args(["-i", &input]);
                 ffmpeg.stdin(Stdio::null());
             }
-            VideoInput::Command(mut command) => {
-                let program = command.get_program().to_string_lossy().into_owned();
-                let mut child = command
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|source| Error::Spawn { program: program.clone(), source })?;
-                let stdout = child.stdout.take().expect("stdout is piped");
-                // An input that ends early (a dropped download, say) looks like
-                // a normal end of video to ffmpeg; its own stderr says why.
-                log_lines(program, child.stderr.take().expect("stderr is piped"));
-                ffmpeg.args(["-i", "pipe:0"]);
-                ffmpeg.stdin(Stdio::from(stdout));
-                input_child = Some(child);
+            VideoInput::Command(command) => {
+                spawn_pipe_input(command, &mut ffmpeg, &mut input_child)?;
+            }
+            VideoInput::CommandWithProgress { command, progress: p } => {
+                progress = Some(p);
+                spawn_pipe_input(command, &mut ffmpeg, &mut input_child)?;
             }
         }
 
         let bitrate = format!("{}k", config.bitrate_kbps);
         let gop = (config.fps * config.keyframe_interval_secs).to_string();
-        ffmpeg.args(["-an", "-vf", &format!("scale=-2:{},fps={}", config.height, config.fps)]);
+        let base_vf = format!("scale=-2:{},fps={}", config.height, config.fps);
+        let full_vf = format!("{base_vf}{}", VideoInput::progress_filter(progress, config.height));
+        ffmpeg.args(["-an", "-vf", &full_vf]);
         ffmpeg.args(["-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8"]);
         ffmpeg.args(["-b:v", &bitrate, "-maxrate", &bitrate, "-bufsize", &bitrate]);
         ffmpeg.args(["-g", &gop, "-keyint_min", &gop]);
@@ -168,6 +236,30 @@ impl Drop for VideoEncoder {
             }
         });
     }
+}
+
+/// Starts `command` (typically yt-dlp) and wires its stdout to ffmpeg's
+/// stdin as `pipe:0`. Shared by `Command` and `CommandWithProgress`.
+fn spawn_pipe_input(
+    mut command: Command,
+    ffmpeg: &mut Command,
+    input_child: &mut Option<Child>,
+) -> Result<()> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| Error::Spawn { program: program.clone(), source })?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    // An input that ends early (a dropped download, say) looks like
+    // a normal end of video to ffmpeg; its own stderr says why.
+    log_lines(program, child.stderr.take().expect("stderr is piped"));
+    ffmpeg.args(["-i", "pipe:0"]);
+    ffmpeg.stdin(Stdio::from(stdout));
+    *input_child = Some(child);
+    Ok(())
 }
 
 /// Forwards a child's stderr to the log, line by line, until it closes.
